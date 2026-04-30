@@ -11,6 +11,8 @@
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://unpkg.com/lucide-react@0.383.0/dist/umd/lucide-react.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.48.0/dist/umd/supabase.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
   <style>
     body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #0c0a09; }
     html { color-scheme: dark; }
@@ -903,7 +905,7 @@
     //          onChange ({ name?, client?, launch_date?, data? }) => void   // debounced-saved by caller
     //          saveState ('idle' | 'saving' | 'saved' | 'error')
     // ============================================================
-    function CampaignLaunchBlueprint({ campaign, onBack, onChange, saveState, saveError, onRetry }) {
+    function CampaignLaunchBlueprint({ campaign, onBack, onChange, saveState, saveError, onRetry, hideTopBar }) {
       // ---- top-level columns ----
       const [clientName, setClientName] = useState(campaign.client || '');
       const [campaignName, setCampaignName] = useState(campaign.name || '');
@@ -1329,8 +1331,8 @@
             </div>
           </div>
 
-          {/* Save-error banner */}
-          {saveState === 'error' && (
+          {/* Save-error banner (suppressed when parent shows it) */}
+          {!hideTopBar && saveState === 'error' && (
             <div className="print:hidden bg-red-900/50 border-b border-red-800 px-4 md:px-6 py-2">
               <div className="max-w-7xl mx-auto flex items-center gap-2 text-sm text-red-100">
                 <AlertCircle className="w-4 h-4" />
@@ -1342,19 +1344,21 @@
           )}
 
           <div className="max-w-7xl mx-auto p-4 md:p-6 print:p-0 print:max-w-full">
-            <div className="mb-4 print:hidden flex items-center justify-between flex-wrap gap-2">
-              <button onClick={onBack} className="flex items-center gap-1.5 text-xs uppercase tracking-wider font-bold text-stone-400 hover:text-amber-300 transition-colors">
-                <ArrowLeft className="w-4 h-4" /> Back to Dashboard
-              </button>
-              {saveLabel && (
-                <div className={`flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider ${saveState === 'saving' ? 'text-stone-400' : saveState === 'saved' ? 'text-emerald-400' : 'text-red-400'}`}>
-                  {saveState === 'saving' && <Loader2 className="w-3 h-3 animate-spin" />}
-                  {saveState === 'saved' && <CheckCircle2 className="w-3 h-3" />}
-                  {saveState === 'error' && <AlertCircle className="w-3 h-3" />}
-                  {saveLabel}
-                </div>
-              )}
-            </div>
+            {!hideTopBar && (
+              <div className="mb-4 print:hidden flex items-center justify-between flex-wrap gap-2">
+                <button onClick={onBack} className="flex items-center gap-1.5 text-xs uppercase tracking-wider font-bold text-stone-400 hover:text-amber-300 transition-colors">
+                  <ArrowLeft className="w-4 h-4" /> Back to Dashboard
+                </button>
+                {saveLabel && (
+                  <div className={`flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider ${saveState === 'saving' ? 'text-stone-400' : saveState === 'saved' ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {saveState === 'saving' && <Loader2 className="w-3 h-3 animate-spin" />}
+                    {saveState === 'saved' && <CheckCircle2 className="w-3 h-3" />}
+                    {saveState === 'error' && <AlertCircle className="w-3 h-3" />}
+                    {saveLabel}
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="mb-6 print:hidden">
               <div className="flex items-center justify-between flex-wrap gap-3">
@@ -1821,14 +1825,733 @@
     }
 
     // ============================================================
-    // CAMPAIGN DETAIL (wraps blueprint + debounced saves)
+    // CREATIVE TOOLKIT — presets, data shape, component, PDF export
     // ============================================================
-    function CampaignDetail({ campaign, onBack, onSaved, onLocalUpdate }) {
+    const TOOLKIT_PRESETS = [
+      {
+        id: "meta-static-1x1",
+        label: "Meta Static 1:1",
+        vendor: "Facebook + Instagram",
+        mediaType: "Static",
+        spec: "1:1 ratio — 1080x1080px.\n\n2 Options to Test:\n• Movement + No Movement\n• Creative Elements vs None\n• Message A vs Message B\n\nOpen to options.",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "meta-static-9x16",
+        label: "Meta Static 9:16",
+        vendor: "Facebook + Instagram",
+        mediaType: "Static",
+        spec: "9:16 ratio — 1080x1920px.\n\nSame creative as 1:1 version, resized for stories/reels placements.",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "meta-video-1x1",
+        label: "Meta Video 1:1",
+        vendor: "Facebook + Instagram",
+        mediaType: "Video",
+        spec: "1:1 ratio — 1080x1080px. Video format for feed placements.",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "meta-video-9x16",
+        label: "Meta Video 9:16",
+        vendor: "Facebook + Instagram",
+        mediaType: "Video",
+        spec: "9:16 ratio — 1080x1920px. Video format for stories/reels placements.",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "google-search",
+        label: "Google Search Copy",
+        vendor: "Google Search",
+        mediaType: "Copy",
+        spec: "Headlines:\n• Minimum required: 3\n• Maximum allowed: 15\n• Character limit: 30 characters each\n\nDescriptions:\n• Minimum required: 2\n• Maximum allowed: 4\n• Character limit: 90 characters each\n\nIDEAL: 8-12 headlines, 3-4 descriptions.",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "dooh-vertical",
+        label: "DOOH Static (Vertical)",
+        vendor: "Pathlabs",
+        mediaType: "DOOH Static",
+        spec: "Dimensions: 1080x1920 (vertical)\nExisting Media Files: .psd or .ai\nQR Code Destination: URL\nAudio: Not available\n\nBest Practices:\n• Copy — use as little text as possible to allow branding and imagery to shine.",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "dooh-horizontal",
+        label: "DOOH Static (Horizontal)",
+        vendor: "Pathlabs",
+        mediaType: "DOOH Static",
+        spec: "Dimensions: 1920x1080 (horizontal)\nExisting Media Files: .psd or .ai\nQR Code Destination: URL\nAudio: Not available\n\nBest Practices:\n• Copy — use as little text as possible to allow branding and imagery to shine.",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "lamar-billboard",
+        label: "LAMAR Digital Billboard",
+        vendor: "LAMAR OOH",
+        mediaType: "OOH Digital Billboard",
+        spec: "Design using Photoshop & Illustrator — 400px H x 1400px W @ 72ppi\n\nPixel Dimensions / Resolution:\nAutoscale templates maximize image quality across the digital network regardless of display size. This panel is eligible for the autoscale bulletin template (400px H x 1400px W @ 72ppi).\n\nCompatible Software: Adobe Photoshop, Illustrator, InDesign\n\nAcceptable Formats: Save all RGB artwork as .JPG, .BMP or .GIF at maximum quality. NO ANIMATED GIFS. Submit the file to your Lamar representative for uploading.\n\nColor Matching: Create in RGB mode. For best color matching, convert to the sRGB color profile.\n\nDesign Tips:\n• Use RGB (additive), not CMYK\n• Black: R0 G0 B0\n• Convert PMS to RGB\n• Rich, bold backgrounds for day; pastel for night\n• Text: bold simple fonts, readable at ≥15\" height\n• Design: one message, strong focal point, readable fonts, contrasting colors, brevity wins",
+        mediaBuyer: "Jim / LAMAR"
+      },
+      {
+        id: "prisma-direct-mail",
+        label: "Prisma Direct Mail 6x9",
+        vendor: "Prisma (Direct Mail)",
+        mediaType: "Direct Mail",
+        spec: "Flat Size: 6\" x 9\"\nFinished Size: same\nPaper: 130# Silk Cover\nMedia: Provided by Client\n\nProofs:\n• Press Proof: PDF\n• No Press: 4/4 process 2 sides — VARIABLE DATA\n\nCoverage/Bleeds: 50%, Bleeds\nCustomer Press OK: No\nBinding: Gloss UV 2 Sides, Trim",
+        mediaBuyer: "Jim"
+      },
+      {
+        id: "magazine-full-page",
+        label: "Magazine Full Page",
+        vendor: "",
+        mediaType: "Magazine",
+        spec: "Full Page — 8.5\" x 11.125\" (Bleed Included)",
+        mediaBuyer: "Jim"
+      }
+    ];
+
+    function newPlacementId() {
+      if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
+      return 'p-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 9);
+    }
+
+    function blankPlacement(defaults = {}) {
+      return {
+        id: newPlacementId(),
+        adNumber: '',
+        mediaBuyer: '',
+        vendor: '',
+        mediaType: '',
+        spec: '',
+        quantity: '',
+        targetAudience: '',
+        goal: '',
+        startDate: '',
+        endDate: '',
+        landingPage: '',
+        trafficked: false,
+        notes: '',
+        ...defaults,
+      };
+    }
+
+    function sanitizeFilename(s) {
+      return (s || 'Untitled')
+        .replace(/[\\/:*?"<>|]/g, '')
+        .replace(/\s+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '') || 'Untitled';
+    }
+
+    function groupByVendor(placements) {
+      const map = new Map();
+      placements.forEach((p) => {
+        const key = (p.vendor || '').trim() || 'Unassigned';
+        if (!map.has(key)) map.set(key, []);
+        map.get(key).push(p);
+      });
+      return map;
+    }
+
+    function autoAdNumberFor(placement, vendorPlacements) {
+      if (placement.adNumber && placement.adNumber.trim()) return placement.adNumber.trim();
+      const idx = vendorPlacements.findIndex((p) => p.id === placement.id);
+      return (idx + 1).toString().padStart(2, '0');
+    }
+
+    function fmtToolkitDate(iso) {
+      if (!iso) return '';
+      const d = parseDateSafe(iso);
+      if (!d) return iso;
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    }
+
+    // ---- PDF generator ----
+    function generateToolkitPDF({ campaign, placements }) {
+      if (!window.jspdf || !window.jspdf.jsPDF) {
+        alert('PDF library failed to load. Please refresh the page and try again.');
+        return;
+      }
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({ orientation: 'landscape', unit: 'in', format: 'letter' });
+      const pageW = doc.internal.pageSize.getWidth();   // 11
+      const pageH = doc.internal.pageSize.getHeight();  // 8.5
+      const marginX = 0.5;
+
+      // ---- Page 1 header (repeat on every page via didDrawPage in autoTable,
+      //      but we draw the big top block only on page 1 here)
+      const drawHeader = () => {
+        // Black bar ~0.6" tall across top
+        doc.setFillColor(0, 0, 0);
+        doc.rect(0, 0, pageW, 0.6, 'F');
+        // TOOLKIT left
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(255, 255, 255);
+        doc.setFontSize(26);
+        doc.text('TOOLKIT', marginX, 0.42);
+        // THE JAMES AGENCY right
+        doc.setFontSize(9);
+        doc.text('THE JAMES AGENCY', pageW - marginX, 0.38, { align: 'right' });
+        // Orange accent bar
+        doc.setFillColor(246, 142, 33);
+        doc.rect(0, 0.6, pageW, 0.05, 'F');
+      };
+
+      const drawFooter = (pageNum, pageCount) => {
+        const y = pageH - 0.3;
+        doc.setDrawColor(246, 142, 33);
+        doc.setLineWidth(0.02);
+        // small orange pipe separator
+        const rightAgency = 'THE JAMES AGENCY';
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7);
+        doc.setTextColor(0, 0, 0);
+        const pageLabel = `Page ${pageNum} of ${pageCount}`;
+        // agency on right, page label to right of agency
+        const agencyW = doc.getTextWidth(rightAgency);
+        const pageW2 = doc.getTextWidth(pageLabel);
+        // layout: [AGENCY] | [PAGE X OF Y] flush right
+        const pageLabelX = pageW - marginX;
+        doc.text(pageLabel, pageLabelX, y, { align: 'right' });
+        // orange pipe
+        const pipeX = pageLabelX - pageW2 - 0.08;
+        doc.setDrawColor(246, 142, 33);
+        doc.setLineWidth(0.04);
+        doc.line(pipeX, y - 0.1, pipeX, y + 0.02);
+        // agency
+        doc.setTextColor(0, 0, 0);
+        doc.text(rightAgency, pipeX - 0.08, y, { align: 'right' });
+      };
+
+      // Draw header on first page
+      drawHeader();
+      doc._headerDrawn = { 1: true };
+
+      // Document title block below header
+      let cursorY = 0.95;
+      doc.setTextColor(0, 0, 0);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(14);
+      const title = campaign.name || 'Untitled Campaign';
+      doc.text(title, marginX, cursorY);
+      cursorY += 0.25;
+      if (campaign.client) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(11);
+        doc.setTextColor(110, 110, 110);
+        doc.text(campaign.client, marginX, cursorY);
+        cursorY += 0.22;
+      }
+      if (campaign.launch_date) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(10);
+        doc.setTextColor(80, 80, 80);
+        const launchStr = 'Launch: ' + fmtToolkitDate(campaign.launch_date);
+        doc.text(launchStr, marginX, cursorY);
+        cursorY += 0.22;
+      }
+
+      cursorY += 0.1;
+
+      // Group placements by vendor for tables
+      const groups = groupByVendor(placements);
+      if (groups.size === 0) {
+        doc.setFont('helvetica', 'italic');
+        doc.setFontSize(11);
+        doc.setTextColor(120, 120, 120);
+        doc.text('No placements yet.', marginX, cursorY + 0.2);
+      }
+
+      const head = [[
+        'Ad #', 'Media Type', 'Spec', 'Qty', 'Target Audience',
+        'Goal', 'Start', 'End', 'Landing Page', 'Traffic', 'Notes',
+      ]];
+
+      let isFirstGroup = true;
+      groups.forEach((vendorPlacements, vendorName) => {
+        // vendor section heading
+        const startY = isFirstGroup ? cursorY : (doc.lastAutoTable ? doc.lastAutoTable.finalY + 0.3 : cursorY);
+        // If we're too close to the bottom, autoTable will handle page breaks;
+        // but for the vendor heading we need manual logic
+        let headingY = startY;
+        if (headingY > pageH - 1.2) {
+          doc.addPage();
+          drawHeader();
+          doc._headerDrawn = doc._headerDrawn || {};
+          doc._headerDrawn[doc.internal.getCurrentPageInfo().pageNumber] = true;
+          headingY = 0.95;
+        }
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(10);
+        doc.setTextColor(0, 0, 0);
+        doc.text((vendorName || 'Unassigned').toUpperCase(), marginX, headingY);
+        // subtle underline
+        doc.setDrawColor(0, 0, 0);
+        doc.setLineWidth(0.01);
+        doc.line(marginX, headingY + 0.04, pageW - marginX, headingY + 0.04);
+
+        const body = vendorPlacements.map((p) => [
+          autoAdNumberFor(p, vendorPlacements),
+          p.mediaType || '',
+          p.spec || '',
+          p.quantity || '',
+          p.targetAudience || '',
+          p.goal || '',
+          p.startDate ? fmtToolkitDate(p.startDate) : '',
+          p.endDate ? fmtToolkitDate(p.endDate) : '',
+          p.landingPage || '',
+          p.trafficked ? 'Yes' : '',
+          p.notes || '',
+        ]);
+
+        doc.autoTable({
+          head,
+          body,
+          startY: headingY + 0.12,
+          margin: { left: marginX, right: marginX, top: 0.9, bottom: 0.5 },
+          theme: 'plain',
+          styles: {
+            font: 'helvetica',
+            fontSize: 7.5,
+            cellPadding: 0.06,
+            textColor: [0, 0, 0],
+            lineColor: [220, 220, 220],
+            lineWidth: 0.005,
+            overflow: 'linebreak',
+            valign: 'top',
+          },
+          headStyles: {
+            fillColor: [0, 0, 0],
+            textColor: [255, 255, 255],
+            fontStyle: 'bold',
+            fontSize: 8,
+            halign: 'left',
+            lineWidth: 0,
+          },
+          bodyStyles: {
+            fillColor: [255, 255, 255],
+          },
+          alternateRowStyles: {
+            fillColor: [247, 247, 247],
+          },
+          columnStyles: {
+            0: { cellWidth: 0.45 },  // Ad #
+            1: { cellWidth: 0.9 },   // Media Type
+            2: { cellWidth: 2.3 },   // Spec (widest)
+            3: { cellWidth: 0.5 },   // Qty
+            4: { cellWidth: 1.0 },   // Target Audience
+            5: { cellWidth: 0.9 },   // Goal
+            6: { cellWidth: 0.7 },   // Start
+            7: { cellWidth: 0.7 },   // End
+            8: { cellWidth: 1.1 },   // Landing Page
+            9: { cellWidth: 0.45 },  // Traffic
+            10: { cellWidth: 1.0 },  // Notes
+          },
+          didDrawPage: (data) => {
+            // On any page created by autoTable (page 2+), draw the header
+            if (data.pageNumber > 1 || (data.pageNumber === 1 && data.cursor && data.cursor.y < 0.9)) {
+              // Only draw top header if this is a new page (not initial)
+            }
+            // autoTable fires didDrawPage for every page including the first.
+            // We already drew header on page 1; only redraw for new pages.
+            const currentPage = doc.internal.getCurrentPageInfo().pageNumber;
+            if (currentPage > 1) {
+              // Check if header has been drawn on this page by tracking via doc internal
+              // Simplest: always draw on pages > 1. autoTable respects margin.top so
+              // drawing a 0.65" header won't overlap.
+              // But don't double-draw — guard with a flag on the page.
+              if (!doc._headerDrawn || !doc._headerDrawn[currentPage]) {
+                doc._headerDrawn = doc._headerDrawn || {};
+                doc._headerDrawn[currentPage] = true;
+                drawHeader();
+              }
+            }
+          },
+        });
+
+        isFirstGroup = false;
+      });
+
+      // Finalize: footer on every page with page numbers
+      const totalPages = doc.internal.getNumberOfPages();
+      for (let i = 1; i <= totalPages; i++) {
+        doc.setPage(i);
+        drawFooter(i, totalPages);
+      }
+
+      const filename = `Toolkit - ${sanitizeFilename(campaign.client || 'Client')} - ${sanitizeFilename(campaign.name || 'Campaign')}.pdf`;
+      doc.save(filename);
+    }
+
+    // ---- PlacementCard (form-style editable card) ----
+    function PlacementCard({ placement, vendorPlacements, onChange, onDuplicate, onDelete }) {
+      const update = (field, value) => onChange({ ...placement, [field]: value });
+      const autoAd = autoAdNumberFor(placement, vendorPlacements);
+
+      return (
+        <div className="bg-stone-900 border border-stone-800 rounded-sm p-4 md:p-5 shadow-lg shadow-black/20">
+          <div className="flex items-start justify-between gap-3 mb-4 pb-3 border-b border-stone-800">
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-bold uppercase tracking-widest text-stone-500">Ad #</span>
+                <input
+                  type="text"
+                  value={placement.adNumber}
+                  onChange={(e) => update('adNumber', e.target.value)}
+                  placeholder={autoAd}
+                  className="w-20 px-2 py-1 bg-stone-800 border border-stone-700 rounded-sm text-sm font-bold text-amber-50 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-bold uppercase tracking-widest text-stone-500">Vendor</span>
+                <input
+                  type="text"
+                  value={placement.vendor}
+                  onChange={(e) => update('vendor', e.target.value)}
+                  placeholder="e.g. Facebook + Instagram"
+                  className="w-60 px-2 py-1 bg-stone-800 border border-stone-700 rounded-sm text-sm text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                />
+              </div>
+            </div>
+            <div className="flex items-center gap-1 flex-shrink-0">
+              <button
+                onClick={onDuplicate}
+                title="Duplicate"
+                className="flex items-center gap-1 px-2 py-1 bg-stone-800 hover:bg-stone-700 text-stone-300 rounded-sm text-[10px] font-bold uppercase tracking-wider transition-colors"
+              >
+                <Copy className="w-3 h-3" /> Duplicate
+              </button>
+              <button
+                onClick={onDelete}
+                title="Delete"
+                className="flex items-center gap-1 px-2 py-1 bg-stone-800 hover:bg-red-900/50 text-stone-300 hover:text-red-300 rounded-sm text-[10px] font-bold uppercase tracking-wider transition-colors"
+              >
+                <Trash2 className="w-3 h-3" /> Delete
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+            <div>
+              <label className="block text-[10px] font-bold uppercase tracking-wider text-stone-400 mb-1">Media Buyer</label>
+              <input
+                type="text"
+                value={placement.mediaBuyer}
+                onChange={(e) => update('mediaBuyer', e.target.value)}
+                placeholder="e.g. Sydnie/Pathlabs"
+                className="w-full px-2.5 py-1.5 bg-stone-800 border border-stone-700 rounded-sm text-sm text-stone-100 placeholder:text-stone-500 focus:outline-none focus:ring-2 focus:ring-amber-400"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold uppercase tracking-wider text-stone-400 mb-1">Media Type</label>
+              <input
+                type="text"
+                value={placement.mediaType}
+                onChange={(e) => update('mediaType', e.target.value)}
+                placeholder="e.g. Static, Video, Copy, OOH Digital Billboard"
+                className="w-full px-2.5 py-1.5 bg-stone-800 border border-stone-700 rounded-sm text-sm text-stone-100 placeholder:text-stone-500 focus:outline-none focus:ring-2 focus:ring-amber-400"
+              />
+            </div>
+          </div>
+
+          <div className="mb-3">
+            <label className="block text-[10px] font-bold uppercase tracking-wider text-stone-400 mb-1">Spec</label>
+            <textarea
+              value={placement.spec}
+              onChange={(e) => update('spec', e.target.value)}
+              placeholder="Dimensions, file specs, best practices, vendor requirements…"
+              rows={5}
+              className="w-full px-2.5 py-1.5 bg-stone-800 border border-stone-700 rounded-sm text-sm text-stone-100 placeholder:text-stone-500 focus:outline-none focus:ring-2 focus:ring-amber-400 font-mono leading-relaxed"
+            />
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+            <div>
+              <label className="block text-[10px] font-bold uppercase tracking-wider text-stone-400 mb-1">Quantity</label>
+              <input
+                type="text"
+                value={placement.quantity}
+                onChange={(e) => update('quantity', e.target.value)}
+                placeholder="e.g. 2 - 2 options to test movement vs no movement"
+                className="w-full px-2.5 py-1.5 bg-stone-800 border border-stone-700 rounded-sm text-sm text-stone-100 placeholder:text-stone-500 focus:outline-none focus:ring-2 focus:ring-amber-400"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold uppercase tracking-wider text-stone-400 mb-1">Target Audience</label>
+              <input
+                type="text"
+                value={placement.targetAudience}
+                onChange={(e) => update('targetAudience', e.target.value)}
+                placeholder="Who is this ad for?"
+                className="w-full px-2.5 py-1.5 bg-stone-800 border border-stone-700 rounded-sm text-sm text-stone-100 placeholder:text-stone-500 focus:outline-none focus:ring-2 focus:ring-amber-400"
+              />
+            </div>
+          </div>
+
+          <div className="mb-3">
+            <label className="block text-[10px] font-bold uppercase tracking-wider text-stone-400 mb-1">Goal</label>
+            <input
+              type="text"
+              value={placement.goal}
+              onChange={(e) => update('goal', e.target.value)}
+              placeholder="What should this ad accomplish?"
+              className="w-full px-2.5 py-1.5 bg-stone-800 border border-stone-700 rounded-sm text-sm text-stone-100 placeholder:text-stone-500 focus:outline-none focus:ring-2 focus:ring-amber-400"
+            />
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+            <div>
+              <label className="block text-[10px] font-bold uppercase tracking-wider text-stone-400 mb-1">Start Date</label>
+              <input
+                type="date"
+                value={placement.startDate || ''}
+                onChange={(e) => update('startDate', e.target.value)}
+                className="w-full px-2.5 py-1.5 bg-stone-800 border border-stone-700 rounded-sm text-sm text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-400 [color-scheme:dark]"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold uppercase tracking-wider text-stone-400 mb-1">End Date</label>
+              <input
+                type="date"
+                value={placement.endDate || ''}
+                onChange={(e) => update('endDate', e.target.value)}
+                className="w-full px-2.5 py-1.5 bg-stone-800 border border-stone-700 rounded-sm text-sm text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-400 [color-scheme:dark]"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold uppercase tracking-wider text-stone-400 mb-1">Landing Page</label>
+              <input
+                type="text"
+                value={placement.landingPage}
+                onChange={(e) => update('landingPage', e.target.value)}
+                placeholder="https://…"
+                className="w-full px-2.5 py-1.5 bg-stone-800 border border-stone-700 rounded-sm text-sm text-stone-100 placeholder:text-stone-500 focus:outline-none focus:ring-2 focus:ring-amber-400"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-[auto,1fr] gap-3 items-start">
+            <label className="flex items-center gap-2 px-3 py-2 bg-stone-800/50 border border-stone-700 rounded-sm cursor-pointer hover:bg-stone-800 self-start">
+              <input
+                type="checkbox"
+                checked={!!placement.trafficked}
+                onChange={(e) => update('trafficked', e.target.checked)}
+                className="w-4 h-4 accent-amber-400"
+              />
+              <span className="text-[11px] font-bold uppercase tracking-wider text-stone-200">Trafficked</span>
+            </label>
+            <div>
+              <label className="block text-[10px] font-bold uppercase tracking-wider text-stone-400 mb-1">Notes</label>
+              <textarea
+                value={placement.notes}
+                onChange={(e) => update('notes', e.target.value)}
+                placeholder="Anything else the creative team should know?"
+                rows={2}
+                className="w-full px-2.5 py-1.5 bg-stone-800 border border-stone-700 rounded-sm text-sm text-stone-100 placeholder:text-stone-500 focus:outline-none focus:ring-2 focus:ring-amber-400"
+              />
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ---- PresetShelf ----
+    function PresetShelf({ onPick }) {
+      return (
+        <div className="bg-stone-900 border border-stone-800 rounded-sm p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Zap className="w-3.5 h-3.5 text-orange-500" fill="currentColor" strokeWidth={0} />
+            <h3 className="text-[11px] font-black uppercase tracking-[0.2em] text-amber-50">Presets</h3>
+            <span className="text-[10px] text-stone-500">· Click to add a pre-filled placement</span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {TOOLKIT_PRESETS.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => onPick(p)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 bg-stone-800 border border-stone-700 text-stone-200 rounded-sm text-xs font-semibold hover:bg-orange-500 hover:border-orange-400 hover:text-stone-950 transition-colors"
+              >
+                <Plus className="w-3 h-3" />
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    // ---- CreativeToolkit (main tab component) ----
+    function CreativeToolkit({ campaign, toolkit, onToolkitChange, userEmail }) {
+      const placements = Array.isArray(toolkit && toolkit.placements) ? toolkit.placements : [];
+
+      const defaultMediaBuyer = userEmail || 'Sydnie/Pathlabs';
+
+      const updatePlacements = (nextList) => {
+        onToolkitChange({ ...(toolkit || {}), placements: nextList });
+      };
+
+      const addPlacement = (defaults = {}) => {
+        const p = blankPlacement({ mediaBuyer: defaults.mediaBuyer || defaultMediaBuyer, ...defaults });
+        updatePlacements([...placements, p]);
+      };
+
+      const addFromPreset = (preset) => {
+        const p = blankPlacement({
+          vendor: preset.vendor || '',
+          mediaType: preset.mediaType || '',
+          spec: preset.spec || '',
+          mediaBuyer: preset.mediaBuyer || defaultMediaBuyer,
+        });
+        updatePlacements([...placements, p]);
+      };
+
+      const updatePlacement = (next) => {
+        updatePlacements(placements.map((p) => (p.id === next.id ? next : p)));
+      };
+
+      const duplicatePlacement = (id) => {
+        const src = placements.find((p) => p.id === id);
+        if (!src) return;
+        const copy = { ...src, id: newPlacementId(), adNumber: '' };
+        const idx = placements.findIndex((p) => p.id === id);
+        const next = placements.slice();
+        next.splice(idx + 1, 0, copy);
+        updatePlacements(next);
+      };
+
+      const deletePlacement = (id) => {
+        updatePlacements(placements.filter((p) => p.id !== id));
+      };
+
+      const launchDate = campaign.launch_date ? parseDateSafe(campaign.launch_date) : null;
+
+      const grouped = useMemo(() => {
+        const map = groupByVendor(placements);
+        // preserve insertion order via Array.from
+        return Array.from(map.entries());
+      }, [placements]);
+
+      const handleDownload = () => {
+        generateToolkitPDF({ campaign, placements });
+      };
+
+      return (
+        <div className="space-y-4">
+          {/* Toolkit header */}
+          <div className="bg-stone-900 border border-stone-800 rounded-sm p-5 shadow-lg shadow-black/20">
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div className="min-w-0">
+                <div className="text-[10px] uppercase tracking-[0.3em] font-bold text-orange-400 mb-1">Creative Toolkit</div>
+                <h2 className="text-2xl font-black text-amber-50 tracking-tight">{campaign.name || 'Untitled Campaign'}</h2>
+                <div className="mt-1 flex items-center gap-3 flex-wrap text-xs">
+                  {campaign.client && <span className="text-stone-400">{campaign.client}</span>}
+                  {launchDate && (
+                    <>
+                      <span className="text-stone-700">·</span>
+                      <span className="text-stone-400 flex items-center gap-1">
+                        <Calendar className="w-3 h-3" /> Launch {fmtDateShort(launchDate)}
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  onClick={() => addPlacement()}
+                  className="flex items-center gap-1.5 px-3 py-2 bg-stone-800 border border-stone-700 text-stone-200 rounded-sm text-xs font-bold uppercase tracking-wider hover:bg-stone-700 hover:border-amber-400/50 transition-colors"
+                >
+                  <Plus className="w-4 h-4" /> Add Placement
+                </button>
+                <button
+                  onClick={handleDownload}
+                  disabled={placements.length === 0}
+                  className="flex items-center gap-1.5 px-3 py-2 bg-orange-500 text-stone-950 rounded-sm text-xs font-black uppercase tracking-wider hover:bg-orange-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  title={placements.length === 0 ? 'Add a placement first' : 'Download branded PDF'}
+                >
+                  <Download className="w-4 h-4" /> Download PDF
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Preset shelf */}
+          <PresetShelf onPick={addFromPreset} />
+
+          {/* Placements */}
+          {placements.length === 0 ? (
+            <div className="bg-stone-900 border-2 border-dashed border-stone-700 rounded-sm p-12 text-center">
+              <FolderOpen className="w-10 h-10 text-stone-600 mx-auto mb-3" />
+              <h3 className="text-amber-50 font-black uppercase tracking-wider mb-1">No placements yet</h3>
+              <p className="text-sm text-stone-400 mb-4">Pick a preset above or add a custom placement.</p>
+              <button
+                onClick={() => addPlacement()}
+                className="inline-flex items-center gap-1.5 px-3 py-2 bg-amber-400 text-stone-950 rounded-sm text-xs font-bold uppercase tracking-wider hover:bg-amber-300 transition-colors"
+              >
+                <Plus className="w-4 h-4" /> Add Placement
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              {grouped.map(([vendorName, vendorPlacements]) => (
+                <div key={vendorName} className="space-y-2">
+                  <div className="flex items-center gap-2 pl-3 py-2 bg-gradient-to-r from-orange-500/20 via-orange-500/5 to-transparent border-l-4 border-orange-500 rounded-sm">
+                    <h3 className="font-black text-sm uppercase tracking-[0.2em] text-amber-50">
+                      {vendorName || 'Unassigned'}
+                    </h3>
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-stone-400">
+                      {vendorPlacements.length} placement{vendorPlacements.length === 1 ? '' : 's'}
+                    </span>
+                  </div>
+                  <div className="space-y-3">
+                    {vendorPlacements.map((p) => (
+                      <PlacementCard
+                        key={p.id}
+                        placement={p}
+                        vendorPlacements={vendorPlacements}
+                        onChange={updatePlacement}
+                        onDuplicate={() => duplicatePlacement(p.id)}
+                        onDelete={() => deletePlacement(p.id)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ============================================================
+    // CAMPAIGN DETAIL (wraps blueprint + toolkit + debounced saves)
+    // ============================================================
+    function CampaignDetail({ campaign, onBack, onSaved, onLocalUpdate, userEmail }) {
       const [saveState, setSaveState] = useState('idle'); // idle | saving | saved | error
       const [saveError, setSaveError] = useState('');
+      const [activeTab, setActiveTab] = useState('blueprint'); // 'blueprint' | 'toolkit'
       const pendingRef = useRef(null);
       const timerRef = useRef(null);
       const savedTimerRef = useRef(null);
+
+      // Track the latest full row we've either received or pushed, so that
+      // partial changes (blueprint OR toolkit) merge into a complete payload.
+      const latestRef = useRef({
+        name: campaign.name,
+        client: campaign.client,
+        launch_date: campaign.launch_date,
+        data: campaign.data || {},
+      });
+
+      // When campaign id switches, rehydrate the ref
+      useEffect(() => {
+        latestRef.current = {
+          name: campaign.name,
+          client: campaign.client,
+          launch_date: campaign.launch_date,
+          data: campaign.data || {},
+        };
+        setActiveTab('blueprint');
+      }, [campaign.id]);
 
       const flush = useCallback(async () => {
         if (!pendingRef.current) return;
@@ -1861,17 +2584,46 @@
         }
       }, [campaign.id, onSaved]);
 
-      const handleChange = useCallback((payload) => {
-        pendingRef.current = payload;
-        // Optimistic local update so dashboard stays in sync when we return
+      // Blueprint pushes its subset of data. We merge with the existing
+      // toolkit slice so the toolkit is never wiped.
+      const handleBlueprintChange = useCallback((payload) => {
+        const merged = {
+          name: payload.name,
+          client: payload.client,
+          launch_date: payload.launch_date,
+          data: {
+            ...(latestRef.current.data || {}),
+            ...(payload.data || {}),
+            // preserve toolkit
+            toolkit: (latestRef.current.data && latestRef.current.data.toolkit) || undefined,
+          },
+        };
+        // strip undefined toolkit to keep payload clean
+        if (merged.data.toolkit === undefined) delete merged.data.toolkit;
+        latestRef.current = merged;
+        pendingRef.current = merged;
         if (onLocalUpdate) {
-          onLocalUpdate({
-            ...campaign,
-            name: payload.name,
-            client: payload.client,
-            launch_date: payload.launch_date,
-            data: payload.data,
-          });
+          onLocalUpdate({ ...campaign, ...merged });
+        }
+        if (timerRef.current) clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(flush, 800);
+      }, [flush, onLocalUpdate, campaign]);
+
+      // Toolkit pushes only its slice.
+      const handleToolkitChange = useCallback((nextToolkit) => {
+        const merged = {
+          name: latestRef.current.name,
+          client: latestRef.current.client,
+          launch_date: latestRef.current.launch_date,
+          data: {
+            ...(latestRef.current.data || {}),
+            toolkit: nextToolkit,
+          },
+        };
+        latestRef.current = merged;
+        pendingRef.current = merged;
+        if (onLocalUpdate) {
+          onLocalUpdate({ ...campaign, ...merged });
         }
         if (timerRef.current) clearTimeout(timerRef.current);
         timerRef.current = setTimeout(flush, 800);
@@ -1888,15 +2640,79 @@
         };
       }, [flush]);
 
+      const saveLabel = saveState === 'saving' ? 'Saving…'
+        : saveState === 'saved' ? 'Saved'
+        : saveState === 'error' ? "Couldn't save"
+        : '';
+
+      const toolkit = (campaign.data && campaign.data.toolkit) || { placements: [] };
+
       return (
-        <CampaignLaunchBlueprint
-          campaign={campaign}
-          onBack={onBack}
-          onChange={handleChange}
-          saveState={saveState}
-          saveError={saveError}
-          onRetry={handleRetry}
-        />
+        <div className="min-h-screen bg-stone-950 print:bg-white">
+          {/* Save-error banner (shared across tabs) */}
+          {saveState === 'error' && (
+            <div className="print:hidden bg-red-900/50 border-b border-red-800 px-4 md:px-6 py-2">
+              <div className="max-w-7xl mx-auto flex items-center gap-2 text-sm text-red-100">
+                <AlertCircle className="w-4 h-4" />
+                <span className="font-bold">Couldn't save</span>
+                <span className="text-red-300 text-xs">{saveError || 'Connection issue.'}</span>
+                <button onClick={handleRetry} className="ml-auto px-2 py-1 bg-red-800 hover:bg-red-700 rounded-sm text-xs font-bold uppercase tracking-wider">Retry</button>
+              </div>
+            </div>
+          )}
+
+          {/* Top bar: Back + Save indicator + Tab switcher */}
+          <div className="print:hidden max-w-7xl mx-auto px-4 md:px-6 pt-4">
+            <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+              <button onClick={onBack} className="flex items-center gap-1.5 text-xs uppercase tracking-wider font-bold text-stone-400 hover:text-amber-300 transition-colors">
+                <ArrowLeft className="w-4 h-4" /> Back to Dashboard
+              </button>
+              {saveLabel && (
+                <div className={`flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider ${saveState === 'saving' ? 'text-stone-400' : saveState === 'saved' ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {saveState === 'saving' && <Loader2 className="w-3 h-3 animate-spin" />}
+                  {saveState === 'saved' && <CheckCircle2 className="w-3 h-3" />}
+                  {saveState === 'error' && <AlertCircle className="w-3 h-3" />}
+                  {saveLabel}
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-0.5 bg-stone-900 border border-stone-800 rounded-sm p-0.5 w-fit mb-4">
+              <button
+                onClick={() => setActiveTab('blueprint')}
+                className={`px-3 py-1.5 text-xs font-bold uppercase tracking-wider rounded-sm transition-colors ${activeTab === 'blueprint' ? 'bg-amber-400 text-stone-950' : 'text-stone-400 hover:text-stone-200'}`}
+              >
+                Blueprint
+              </button>
+              <button
+                onClick={() => setActiveTab('toolkit')}
+                className={`px-3 py-1.5 text-xs font-bold uppercase tracking-wider rounded-sm transition-colors ${activeTab === 'toolkit' ? 'bg-orange-500 text-stone-950' : 'text-stone-400 hover:text-stone-200'}`}
+              >
+                Creative Toolkit
+              </button>
+            </div>
+          </div>
+
+          {activeTab === 'blueprint' ? (
+            <CampaignLaunchBlueprint
+              campaign={campaign}
+              onBack={onBack}
+              onChange={handleBlueprintChange}
+              saveState={saveState}
+              saveError={saveError}
+              onRetry={handleRetry}
+              hideTopBar
+            />
+          ) : (
+            <div className="max-w-7xl mx-auto px-4 md:px-6 pb-10">
+              <CreativeToolkit
+                campaign={campaign}
+                toolkit={toolkit}
+                onToolkitChange={handleToolkitChange}
+                userEmail={userEmail}
+              />
+            </div>
+          )}
+        </div>
       );
     }
 
@@ -2024,6 +2840,7 @@
               onBack={() => setActiveId(null)}
               onSaved={handleSavedFromDetail}
               onLocalUpdate={updateLocal}
+              userEmail={session && session.user && session.user.email}
             />
           ) : (
             <Dashboard
