@@ -27,7 +27,7 @@
       FolderOpen, Plus, X, Info, Zap, Download, History, ChevronDown, ChevronUp,
       RefreshCw, CalendarClock, CircleDashed, SkipForward, Undo2, LogOut, LogIn,
       ArrowLeft, Archive, ArchiveRestore, LayoutGrid, CalendarDays, Search,
-      ChevronLeft, ChevronRight, Loader2, AlertCircle
+      ChevronLeft, ChevronRight, Loader2, AlertCircle, Flag, Filter
     } = LucideReact;
 
     // ============================================================
@@ -227,6 +227,161 @@
       'Internal Creative': 'bg-purple-400 text-stone-950 print:bg-purple-800 print:text-purple-50',
     };
 
+    // ============================================================
+    // CALENDAR ROLE SYSTEM
+    // 4-role taxonomy used by the multi-task calendar + per-task chip.
+    // The TASKS array still uses the legacy strings; ROLE_MAP collapses
+    // them into one of the 4 calendar roles. taskRoleOverrides on
+    // campaign.data lets the user override per-task.
+    // ============================================================
+    const ROLES = {
+      'AM':         { label: 'AM',         color: '#2563EB', bg: '#1E3A8A' },
+      'Paid Media': { label: 'Paid Media', color: '#F68E21', bg: '#7C3F0E' },
+      'Pathlabs':   { label: 'Pathlabs',   color: '#0EA5A4', bg: '#0F4744' },
+      'Client':     { label: 'Client',     color: '#A855F7', bg: '#5B21B6' },
+    };
+    const ROLE_KEYS = Object.keys(ROLES);
+    const DEFAULT_ROLE = 'Paid Media';
+
+    const ROLE_MAP = {
+      'AM': 'AM',
+      'TJA': 'Paid Media',
+      'SCA': 'Pathlabs',
+      'Tracking': 'Pathlabs',
+      'Client': 'Client',
+    };
+
+    function defaultRoleFor(legacyRole) {
+      if (!legacyRole) return DEFAULT_ROLE;
+      // Handle compound legacy roles like "AM / Loomis" by checking
+      // the first segment for a known mapping.
+      if (ROLE_MAP[legacyRole]) return ROLE_MAP[legacyRole];
+      const first = String(legacyRole).split('/')[0].trim();
+      if (ROLE_MAP[first]) return ROLE_MAP[first];
+      return DEFAULT_ROLE;
+    }
+
+    function resolveTaskRole(taskId, legacyRole, overrides) {
+      if (overrides && overrides[taskId] && ROLES[overrides[taskId]]) return overrides[taskId];
+      return defaultRoleFor(legacyRole);
+    }
+
+    // Build the list of calendar events for the active set of campaigns.
+    // Mirrors the blueprint's task-filtering logic so what shows up on the
+    // calendar matches exactly what the campaign detail view shows.
+    function buildCalendarEvents(campaigns) {
+      const events = [];
+      campaigns.forEach((c) => {
+        if (!c || c.status === 'archived') return;
+        if (!c.launch_date) return;
+        const launch = parseDateSafe(c.launch_date);
+        if (!launch) return;
+
+        const data = c.data || {};
+        const campaignType = data.campaignType || 'net-new';
+        const preset = CAMPAIGN_TYPES[campaignType] || CAMPAIGN_TYPES['net-new'];
+        const channels = data.channels || {};
+        const requirements = data.requirements || {};
+        const businessDays = data.businessDays !== false;
+        const completedTasks = data.completedTasks || {};
+        const skippedTasks = data.skippedTasks || {};
+        const customTasks = Array.isArray(data.customTasks) ? data.customTasks : [];
+        const includeInternalCreative = !!data.includeInternalCreative;
+        const internalStages = Array.isArray(data.internalStages) ? data.internalStages : [];
+        const includeDashboard = data.includeDashboard !== false;
+        const dashboardLeadDays = Math.max(0, Math.min(4, Number(data.dashboardLeadDays) || 2));
+        const overrides = data.taskRoleOverrides || {};
+
+        const flags = { ...requirements };
+        Object.keys(channels).forEach((k) => { if (channels[k]) flags[k] = true; });
+
+        const taskPasses = (t) => {
+          if (preset.excludedPhases && preset.excludedPhases.includes(t.phase)) return false;
+          if (preset.excludedTasks && preset.excludedTasks.includes(t.id)) return false;
+          if (t.requires && !t.requires.every((r) => flags[r])) return false;
+          if (t.requiresAny && !t.requiresAny.some((r) => flags[r])) return false;
+          return true;
+        };
+
+        const pushEvent = (taskId, taskName, date, legacyRole, isCustom) => {
+          if (!date || isNaN(date.getTime())) return;
+          if (skippedTasks[taskId]) return;
+          events.push({
+            campaignId: c.id,
+            campaignName: c.name || 'Untitled campaign',
+            client: c.client || '',
+            taskId,
+            taskName,
+            date,
+            role: resolveTaskRole(taskId, legacyRole, overrides),
+            completed: !!completedTasks[taskId],
+            isLaunchDate: false,
+            isCustom: !!isCustom,
+          });
+        };
+
+        // Pre-launch master tasks
+        TASKS.filter(taskPasses).forEach((t) => {
+          const dp = Number(t.daysPrior);
+          const safeDp = isNaN(dp) ? 0 : dp;
+          // daysPrior < 0 => post-launch (matches existing convention)
+          const date = safeDp >= 0
+            ? subtract(launch, safeDp, businessDays)
+            : shift(launch, Math.abs(safeDp), businessDays);
+          pushEvent(t.id, t.name, date, t.role, false);
+        });
+
+        // Custom tasks (user-defined)
+        customTasks.forEach((t) => {
+          const dp = Number(t.daysPrior);
+          const safeDp = isNaN(dp) ? 0 : dp;
+          const date = safeDp >= 0
+            ? subtract(launch, safeDp, businessDays)
+            : shift(launch, Math.abs(safeDp), businessDays);
+          pushEvent(t.id, t.name, date, t.role, true);
+        });
+
+        // Internal creative stages
+        if (includeInternalCreative) {
+          let cumulative = 3;
+          [...internalStages].reverse().forEach((stage) => {
+            cumulative += Number(stage.days) || 0;
+            const id = `internal-${stage.id}`;
+            const date = subtract(launch, cumulative, businessDays);
+            pushEvent(id, stage.name, date, 'Internal Creative', false);
+          });
+        }
+
+        // Post-launch (dashboard / day-1 / week-1)
+        if (includeDashboard && !(preset.excludedPhases || []).includes('Post-Launch')) {
+          const post = [
+            { id: 'dashboard-draft', name: 'Dashboard draft provided for review', after: dashboardLeadDays, role: 'AM' },
+            { id: 'day-1-check', name: 'Day-1 performance check', after: 1, role: 'TJA' },
+            { id: 'week-1-optimize', name: 'Week-1 optimization review', after: 7, role: 'TJA' },
+          ];
+          post.forEach((p) => {
+            const date = shift(launch, p.after, businessDays);
+            pushEvent(p.id, p.name, date, p.role, false);
+          });
+        }
+
+        // Launch-date marker
+        events.push({
+          campaignId: c.id,
+          campaignName: c.name || 'Untitled campaign',
+          client: c.client || '',
+          taskId: `__launch__${c.id}`,
+          taskName: 'LAUNCH',
+          date: launch,
+          role: 'Paid Media',
+          completed: false,
+          isLaunchDate: true,
+          isCustom: false,
+        });
+      });
+      return events;
+    }
+
     function getTaskStatus(task, completedTasks, skippedTasks, today) {
       if (skippedTasks[task.id]) return 'skipped';
       if (completedTasks[task.id]) return 'done';
@@ -281,6 +436,7 @@
         skippedTasks: {},
         shiftHistory: [],
         originalLaunchDate: '',
+        taskRoleOverrides: {},
       };
     }
 
@@ -700,12 +856,41 @@
     }
 
     // ============================================================
-    // CALENDAR VIEW
+    // CALENDAR VIEW (rebuilt — multi-task, role-colored, filterable)
+    // Shows every task across every active campaign on the day it's due.
+    // Dots are colored by task role; launch days render as a flag icon.
+    // Filters live in React state (no localStorage) so they persist for
+    // the session but reset between page loads.
     // ============================================================
     function CalendarView({ campaigns, onOpen }) {
       const [cursor, setCursor] = useState(() => {
         const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); return d;
       });
+      const [activeRoles, setActiveRoles] = useState(() => {
+        const s = {}; ROLE_KEYS.forEach((k) => { s[k] = true; }); return s;
+      });
+      const [activeCampaignIds, setActiveCampaignIds] = useState(() => {
+        const s = {}; campaigns.forEach((c) => { s[c.id] = true; }); return s;
+      });
+      const [hideCompleted, setHideCompleted] = useState(false);
+      const [campaignPickerOpen, setCampaignPickerOpen] = useState(false);
+      const [selectedDay, setSelectedDay] = useState(null); // { dateKey, anchor }
+
+      // Keep activeCampaignIds in sync when campaigns list changes
+      useEffect(() => {
+        setActiveCampaignIds((prev) => {
+          const next = { ...prev };
+          let changed = false;
+          campaigns.forEach((c) => {
+            if (!(c.id in next)) { next[c.id] = true; changed = true; }
+          });
+          // remove ids that no longer exist
+          Object.keys(next).forEach((id) => {
+            if (!campaigns.find((c) => c.id === id)) { delete next[id]; changed = true; }
+          });
+          return changed ? next : prev;
+        });
+      }, [campaigns]);
 
       const year = cursor.getFullYear();
       const month = cursor.getMonth();
@@ -716,38 +901,146 @@
       const daysInMonth = lastDay.getDate();
       const startWeekday = firstDay.getDay();
 
-      // Build grid: leading empty cells + days
       const cells = [];
       for (let i = 0; i < startWeekday; i++) cells.push(null);
       for (let d = 1; d <= daysInMonth; d++) cells.push(d);
       while (cells.length % 7 !== 0) cells.push(null);
 
-      const campaignsByDate = useMemo(() => {
+      // Compute all events from all (active, launch_date set) campaigns once.
+      const allEvents = useMemo(() => buildCalendarEvents(campaigns), [campaigns]);
+
+      // Filter events by the user's filter state.
+      const filteredEvents = useMemo(() => {
+        return allEvents.filter((ev) => {
+          if (!activeCampaignIds[ev.campaignId]) return false;
+          if (!ev.isLaunchDate) {
+            if (!activeRoles[ev.role]) return false;
+            if (hideCompleted && ev.completed) return false;
+          }
+          return true;
+        });
+      }, [allEvents, activeCampaignIds, activeRoles, hideCompleted]);
+
+      // Bucket events by ISO date key.
+      const eventsByDate = useMemo(() => {
         const map = {};
-        campaigns.forEach((c) => {
-          if (!c.launch_date) return;
-          if (!map[c.launch_date]) map[c.launch_date] = [];
-          map[c.launch_date].push(c);
+        filteredEvents.forEach((ev) => {
+          const key = fmtDateIso(ev.date);
+          if (!map[key]) map[key] = [];
+          map[key].push(ev);
+        });
+        // Stable sort: launches first, then completed last, then by name
+        Object.keys(map).forEach((k) => {
+          map[k].sort((a, b) => {
+            if (a.isLaunchDate !== b.isLaunchDate) return a.isLaunchDate ? -1 : 1;
+            if (!!a.completed !== !!b.completed) return a.completed ? 1 : -1;
+            return a.taskName.localeCompare(b.taskName);
+          });
         });
         return map;
-      }, [campaigns]);
+      }, [filteredEvents]);
 
       const prevMonth = () => setCursor(new Date(year, month - 1, 1));
       const nextMonth = () => setCursor(new Date(year, month + 1, 1));
-      const today = () => { const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); setCursor(d); };
+      const goToday = () => { const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); setCursor(d); };
 
       const todayKey = fmtDateIso(new Date());
 
+      const toggleRole = (k) => setActiveRoles((p) => ({ ...p, [k]: !p[k] }));
+      const toggleCampaign = (id) => setActiveCampaignIds((p) => ({ ...p, [id]: !p[id] }));
+      const allCampaignsOn = campaigns.length > 0 && campaigns.every((c) => activeCampaignIds[c.id]);
+      const activeCampaignCount = campaigns.filter((c) => activeCampaignIds[c.id]).length;
+
+      const setAllCampaigns = (val) => {
+        const s = {}; campaigns.forEach((c) => { s[c.id] = val; });
+        setActiveCampaignIds(s);
+      };
+
+      const openDay = (dateKey, anchorEl) => {
+        const rect = anchorEl ? anchorEl.getBoundingClientRect() : null;
+        setSelectedDay({ dateKey, rect });
+      };
+
+      const closePopover = () => setSelectedDay(null);
+
+      const dayEvents = selectedDay ? (eventsByDate[selectedDay.dateKey] || []) : [];
+      const selectedDate = selectedDay ? parseDateSafe(selectedDay.dateKey) : null;
+
       return (
         <div className="bg-stone-900 border border-stone-800 rounded-sm p-4">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-black text-amber-50 text-lg uppercase tracking-tight">{monthLabel}</h3>
-            <div className="flex items-center gap-1">
-              <button onClick={today} className="px-2.5 py-1 text-xs uppercase tracking-wider font-bold text-stone-300 hover:text-amber-50 bg-stone-800 hover:bg-stone-700 rounded-sm">Today</button>
+          {/* Filter strip */}
+          <div className="flex flex-wrap items-center gap-2 mb-4 pb-4 border-b border-stone-800">
+            {/* Role filters */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-stone-500 mr-1">Roles:</span>
+              {ROLE_KEYS.map((k) => {
+                const cfg = ROLES[k];
+                const on = !!activeRoles[k];
+                return (
+                  <button
+                    key={k}
+                    onClick={() => toggleRole(k)}
+                    className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-sm text-[10px] font-bold uppercase tracking-wider border transition-all ${on ? 'border-stone-600 bg-stone-800' : 'border-stone-800 bg-stone-900 opacity-50'}`}
+                    title={on ? `Hide ${cfg.label}` : `Show ${cfg.label}`}
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: cfg.color }}></span>
+                    <span style={{ color: on ? cfg.color : '#78716c' }}>{cfg.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Campaign picker */}
+            <div className="relative">
+              <button
+                onClick={() => setCampaignPickerOpen((v) => !v)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm text-[10px] font-bold uppercase tracking-wider bg-stone-800 hover:bg-stone-700 border border-stone-700 text-stone-200"
+              >
+                <Filter className="w-3 h-3" />
+                {allCampaignsOn ? `All campaigns (${campaigns.length})` : `${activeCampaignCount} of ${campaigns.length} campaigns`}
+                <ChevronDown className="w-3 h-3" />
+              </button>
+              {campaignPickerOpen && (
+                <>
+                  <div className="fixed inset-0 z-30" onClick={() => setCampaignPickerOpen(false)} />
+                  <div className="absolute top-full left-0 mt-1 z-40 bg-stone-900 border border-stone-700 rounded-sm shadow-xl py-1 min-w-[260px] max-h-72 overflow-y-auto">
+                    <div className="px-3 py-1.5 flex items-center gap-2 border-b border-stone-800">
+                      <button onClick={() => setAllCampaigns(true)} className="text-[10px] font-bold uppercase tracking-wider text-amber-300 hover:text-amber-200">Select all</button>
+                      <span className="text-stone-700">·</span>
+                      <button onClick={() => setAllCampaigns(false)} className="text-[10px] font-bold uppercase tracking-wider text-stone-400 hover:text-stone-200">Clear</button>
+                    </div>
+                    {campaigns.length === 0 ? (
+                      <div className="px-3 py-3 text-xs text-stone-500 italic">No campaigns yet.</div>
+                    ) : campaigns.map((c) => (
+                      <label key={c.id} className="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-stone-800">
+                        <input type="checkbox" checked={!!activeCampaignIds[c.id]} onChange={() => toggleCampaign(c.id)} className="w-3.5 h-3.5 accent-amber-400" />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs text-stone-100 truncate">{c.name || 'Untitled campaign'}</div>
+                          {c.client && <div className="text-[10px] text-stone-500 truncate">{c.client}</div>}
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Hide completed */}
+            <label className="inline-flex items-center gap-1.5 px-2 py-1 rounded-sm text-[10px] font-bold uppercase tracking-wider bg-stone-800 hover:bg-stone-700 border border-stone-700 text-stone-200 cursor-pointer">
+              <input type="checkbox" checked={hideCompleted} onChange={(e) => setHideCompleted(e.target.checked)} className="w-3 h-3 accent-amber-400" />
+              Hide completed
+            </label>
+
+            {/* Today + nav */}
+            <div className="flex items-center gap-1 ml-auto">
+              <button onClick={goToday} className="px-2.5 py-1 text-[10px] uppercase tracking-wider font-bold text-stone-300 hover:text-amber-50 bg-stone-800 hover:bg-stone-700 rounded-sm">Today</button>
               <button onClick={prevMonth} className="p-1.5 bg-stone-800 hover:bg-stone-700 text-stone-300 rounded-sm"><ChevronLeft className="w-4 h-4" /></button>
+              <div className="px-2 text-xs font-bold uppercase tracking-wider text-amber-50 min-w-[140px] text-center">{monthLabel}</div>
               <button onClick={nextMonth} className="p-1.5 bg-stone-800 hover:bg-stone-700 text-stone-300 rounded-sm"><ChevronRight className="w-4 h-4" /></button>
             </div>
           </div>
+
+          {/* Calendar grid */}
           <div className="grid grid-cols-7 gap-1 mb-1">
             {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((w) => (
               <div key={w} className="text-[10px] font-bold uppercase tracking-widest text-stone-500 text-center py-1">{w}</div>
@@ -755,33 +1048,177 @@
           </div>
           <div className="grid grid-cols-7 gap-1">
             {cells.map((d, idx) => {
-              if (d === null) return <div key={idx} className="min-h-[88px] bg-stone-950/40 rounded-sm border border-stone-900" />;
+              if (d === null) return <div key={idx} className="min-h-[96px] bg-stone-950/40 rounded-sm border border-stone-900" />;
               const dateKey = fmtDateIso(new Date(year, month, d));
-              const items = campaignsByDate[dateKey] || [];
+              const items = eventsByDate[dateKey] || [];
+              const launchItems = items.filter((e) => e.isLaunchDate);
+              const taskItems = items.filter((e) => !e.isLaunchDate);
               const isToday = dateKey === todayKey;
+              const hasEvents = items.length > 0;
+              const dotsToShow = taskItems.slice(0, 6);
+              const remaining = taskItems.length - dotsToShow.length;
               return (
-                <div key={idx} className={`min-h-[88px] bg-stone-950 rounded-sm border p-1.5 flex flex-col gap-1 ${isToday ? 'border-amber-400/60' : 'border-stone-800'}`}>
-                  <div className={`text-[11px] font-bold ${isToday ? 'text-amber-400' : 'text-stone-400'}`}>{d}</div>
-                  <div className="flex flex-col gap-0.5 overflow-hidden">
-                    {items.slice(0, 3).map((c) => (
-                      <button
-                        key={c.id}
-                        onClick={() => onOpen(c)}
-                        className="text-left text-[10px] font-bold truncate px-1.5 py-0.5 bg-amber-400/20 hover:bg-amber-400/40 text-amber-200 rounded-sm border border-amber-400/30 transition-colors"
-                        title={`${c.name}${c.client ? ' — ' + c.client : ''}`}
-                      >
-                        {c.name}
-                      </button>
-                    ))}
-                    {items.length > 3 && (
-                      <div className="text-[9px] text-stone-500 px-1">+{items.length - 3} more</div>
+                <button
+                  key={idx}
+                  onClick={(e) => hasEvents && openDay(dateKey, e.currentTarget)}
+                  className={`relative text-left min-h-[96px] rounded-sm border p-1.5 flex flex-col gap-1 transition-all ${
+                    isToday
+                      ? 'bg-stone-900 border-white/40'
+                      : hasEvents
+                        ? 'bg-stone-950 border-stone-800 hover:border-stone-600 cursor-pointer'
+                        : 'bg-stone-950 border-stone-900'
+                  } ${hasEvents ? '' : 'cursor-default'}`}
+                  disabled={!hasEvents}
+                >
+                  <div className="flex items-start justify-between gap-1">
+                    <span className={`text-[11px] font-bold ${isToday ? 'text-white' : hasEvents ? 'text-stone-300' : 'text-stone-600'}`}>{d}</span>
+                    {launchItems.length > 0 && (
+                      <Flag
+                        className="w-3.5 h-3.5"
+                        style={{ color: ROLES['Paid Media'].color, fill: ROLES['Paid Media'].color }}
+                        strokeWidth={1.5}
+                      />
                     )}
                   </div>
-                </div>
+                  {dotsToShow.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-0.5">
+                      {dotsToShow.map((ev, i) => {
+                        const cfg = ROLES[ev.role] || ROLES[DEFAULT_ROLE];
+                        return (
+                          <span
+                            key={ev.taskId + ':' + ev.campaignId + ':' + i}
+                            className={`block w-2 h-2 rounded-full ${ev.completed ? 'opacity-40 ring-1 ring-stone-700' : ''}`}
+                            style={{ backgroundColor: cfg.color }}
+                            title={`${ev.taskName} — ${ev.campaignName}`}
+                          ></span>
+                        );
+                      })}
+                      {remaining > 0 && (
+                        <span className="text-[9px] font-bold text-stone-400 leading-none px-1 py-0.5 bg-stone-800 rounded-sm">+{remaining}</span>
+                      )}
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {campaigns.length === 0 && (
+            <div className="mt-4 text-center text-xs text-stone-500 italic py-6">No active campaigns to display.</div>
+          )}
+
+          {/* Day popover */}
+          {selectedDay && selectedDate && (
+            <CalendarDayPopover
+              date={selectedDate}
+              events={dayEvents}
+              anchorRect={selectedDay.rect}
+              onClose={closePopover}
+              onOpenCampaign={(id) => {
+                const c = campaigns.find((x) => x.id === id);
+                if (c) { closePopover(); onOpen(c); }
+              }}
+            />
+          )}
+        </div>
+      );
+    }
+
+    function CalendarDayPopover({ date, events, anchorRect, onClose, onOpenCampaign }) {
+      // Position: try to place near the anchor, but keep within viewport.
+      const popRef = useRef(null);
+      const [pos, setPos] = useState(() => {
+        if (!anchorRect) return { top: 80, left: 80, width: 320 };
+        const vw = window.innerWidth; const vh = window.innerHeight;
+        const W = Math.min(360, vw - 24);
+        const H = 320;
+        // Use viewport coords because the popover uses position: fixed
+        let top = anchorRect.bottom + 6;
+        let left = anchorRect.left;
+        if (left + W > vw - 12) left = vw - W - 12;
+        if (left < 12) left = 12;
+        if (anchorRect.bottom + H > vh - 12) {
+          top = Math.max(12, anchorRect.top - H - 6);
+        }
+        return { top, left, width: W };
+      });
+
+      useEffect(() => {
+        const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+        document.addEventListener('keydown', onKey);
+        return () => document.removeEventListener('keydown', onKey);
+      }, [onClose]);
+
+      const isMobile = window.innerWidth < 640;
+
+      const headerLabel = date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+
+      const content = (
+        <div ref={popRef} className="bg-stone-900 border border-stone-700 rounded-sm shadow-2xl overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-2.5 border-b border-stone-800 bg-stone-900">
+            <div className="font-black text-amber-50 text-xs uppercase tracking-[0.15em]">{headerLabel}</div>
+            <button onClick={onClose} className="p-1 text-stone-400 hover:text-amber-300 hover:bg-stone-800 rounded-sm" aria-label="Close">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="max-h-80 overflow-y-auto">
+            {events.length === 0 ? (
+              <div className="px-4 py-6 text-xs text-stone-500 italic text-center">Nothing scheduled.</div>
+            ) : events.map((ev, i) => {
+              const cfg = ROLES[ev.role] || ROLES[DEFAULT_ROLE];
+              const launch = ev.isLaunchDate;
+              return (
+                <button
+                  key={ev.taskId + ':' + ev.campaignId + ':' + i}
+                  onClick={() => onOpenCampaign(ev.campaignId)}
+                  className="w-full text-left px-4 py-2.5 border-b border-stone-800 last:border-b-0 hover:bg-stone-800/60 transition-colors flex items-start gap-2.5"
+                >
+                  {launch ? (
+                    <Flag className="w-4 h-4 mt-0.5 flex-shrink-0" style={{ color: ROLES['Paid Media'].color, fill: ROLES['Paid Media'].color }} strokeWidth={1.5} />
+                  ) : (
+                    <span className="w-2.5 h-2.5 rounded-full mt-1.5 flex-shrink-0" style={{ backgroundColor: cfg.color }}></span>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className={`text-sm font-semibold ${ev.completed ? 'line-through text-stone-500' : 'text-stone-100'}`}>
+                        {launch ? 'LAUNCH' : ev.taskName}
+                      </span>
+                      {ev.completed && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />}
+                    </div>
+                    <div className="text-[11px] text-stone-400 truncate mt-0.5">
+                      {ev.campaignName}
+                      {ev.client && <span className="text-stone-600"> · {ev.client}</span>}
+                    </div>
+                    {!launch && (
+                      <div className="text-[10px] uppercase tracking-wider font-bold mt-1" style={{ color: cfg.color }}>{cfg.label}</div>
+                    )}
+                  </div>
+                </button>
               );
             })}
           </div>
         </div>
+      );
+
+      if (isMobile) {
+        return (
+          <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end justify-center" onClick={onClose}>
+            <div className="w-full max-h-[80vh]" onClick={(e) => e.stopPropagation()}>{content}</div>
+          </div>
+        );
+      }
+
+      return (
+        <>
+          <div className="fixed inset-0 z-40" onClick={onClose} />
+          <div
+            className="fixed z-50"
+            style={{ top: pos.top, left: pos.left, width: pos.width || 320 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {content}
+          </div>
+        </>
       );
     }
 
@@ -935,6 +1372,8 @@
       const [completedTasks, setCompletedTasks] = useState(initial.completedTasks || {});
       const [skippedTasks, setSkippedTasks] = useState(initial.skippedTasks || {});
       const [shiftHistory, setShiftHistory] = useState(Array.isArray(initial.shiftHistory) ? initial.shiftHistory : []);
+      const [taskRoleOverrides, setTaskRoleOverrides] = useState(initial.taskRoleOverrides || {});
+      const [openRoleChip, setOpenRoleChip] = useState(null);
 
       // ---- UI-only state ----
       const [showShiftDialog, setShowShiftDialog] = useState(false);
@@ -974,6 +1413,8 @@
         setCompletedTasks(d.completedTasks || {});
         setSkippedTasks(d.skippedTasks || {});
         setShiftHistory(Array.isArray(d.shiftHistory) ? d.shiftHistory : []);
+        setTaskRoleOverrides(d.taskRoleOverrides || {});
+        setOpenRoleChip(null);
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [campaign.id]);
 
@@ -994,6 +1435,7 @@
             campaignType, channels, requirements, businessDays,
             includeInternalCreative, internalStages, includeDashboard, dashboardLeadDays,
             customTasks, completedTasks, skippedTasks, shiftHistory, originalLaunchDate,
+            taskRoleOverrides,
           },
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1002,6 +1444,7 @@
         campaignType, channels, requirements, businessDays,
         includeInternalCreative, internalStages, includeDashboard, dashboardLeadDays,
         customTasks, completedTasks, skippedTasks, shiftHistory, originalLaunchDate,
+        taskRoleOverrides,
       ]);
 
       const timeline = useMemo(() => {
@@ -1155,7 +1598,7 @@
         setShowShiftDialog(true);
       };
 
-      const resetCampaign = () => { setCompletedTasks({}); setSkippedTasks({}); setShiftHistory([]); setOriginalLaunchDate(''); setCustomTasks([]); };
+      const resetCampaign = () => { setCompletedTasks({}); setSkippedTasks({}); setShiftHistory([]); setOriginalLaunchDate(''); setCustomTasks([]); setTaskRoleOverrides({}); };
       const downloadPDF = () => { window.print(); };
 
       const copyToClipboard = () => {
@@ -1200,6 +1643,86 @@
 
       const today = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }, []);
 
+      const setRoleOverride = (taskId, role) => {
+        setTaskRoleOverrides((prev) => ({ ...prev, [taskId]: role }));
+        setOpenRoleChip(null);
+      };
+      const clearRoleOverride = (taskId) => {
+        setTaskRoleOverrides((prev) => {
+          if (!prev[taskId]) return prev;
+          const next = { ...prev };
+          delete next[taskId];
+          return next;
+        });
+      };
+
+      const RoleChip = ({ taskId, legacyRole }) => {
+        const override = taskRoleOverrides[taskId];
+        const role = resolveTaskRole(taskId, legacyRole, taskRoleOverrides);
+        const cfg = ROLES[role];
+        const isOpen = openRoleChip === taskId;
+        return (
+          <div className="relative inline-flex items-center gap-1 print:hidden">
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setOpenRoleChip(isOpen ? null : taskId); }}
+              className="inline-flex items-center gap-1.5 h-6 px-2 rounded-sm bg-stone-800 hover:bg-stone-700 border border-stone-700 hover:border-stone-600 transition-colors"
+              title={override ? `Overridden to ${cfg.label}` : `Default role: ${cfg.label}`}
+            >
+              <span className="w-2 h-2 rounded-full" style={{ backgroundColor: cfg.color }}></span>
+              <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: cfg.color }}>{cfg.label}</span>
+              <ChevronDown className="w-3 h-3 text-stone-400" />
+            </button>
+            {override && (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); clearRoleOverride(taskId); }}
+                title="Reset to default role"
+                className="p-0.5 text-stone-500 hover:text-amber-300 hover:bg-stone-800 rounded-sm"
+              >
+                <Undo2 className="w-3 h-3" />
+              </button>
+            )}
+            {isOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setOpenRoleChip(null)} />
+                <div className="absolute top-full right-0 mt-1 z-50 bg-stone-900 border border-stone-700 rounded-sm shadow-xl py-1 min-w-[140px]">
+                  {ROLE_KEYS.map((rk) => {
+                    const rcfg = ROLES[rk];
+                    const isCurrent = rk === role;
+                    return (
+                      <button
+                        key={rk}
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setRoleOverride(taskId, rk); }}
+                        className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-stone-800 transition-colors ${isCurrent ? 'bg-stone-800/50' : ''}`}
+                      >
+                        <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: rcfg.color }}></span>
+                        <span className="font-bold uppercase tracking-wider" style={{ color: rcfg.color }}>{rcfg.label}</span>
+                        {isCurrent && <CheckCircle2 className="w-3 h-3 ml-auto text-stone-400" />}
+                      </button>
+                    );
+                  })}
+                  {override && (
+                    <>
+                      <div className="border-t border-stone-800 my-1"></div>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); clearRoleOverride(taskId); setOpenRoleChip(null); }}
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs text-stone-400 hover:bg-stone-800 transition-colors"
+                      >
+                        <Undo2 className="w-3 h-3" />
+                        <span className="uppercase tracking-wider font-bold">Reset to default</span>
+                      </button>
+                    </>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        );
+      };
+
       const TaskRow = ({ t }) => {
         const status = getTaskStatus(t, completedTasks, skippedTasks, today);
         if (status === 'skipped' && !showSkipped) return null;
@@ -1233,7 +1756,10 @@
                     {t.name}
                     {t.isCustom && <span className="ml-2 text-[9px] uppercase tracking-wider bg-fuchsia-400/20 text-fuchsia-300 px-1.5 py-0.5 rounded-sm print:bg-fuchsia-100 print:text-fuchsia-900">Custom</span>}
                   </div>
-                  <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-sm print:border print:border-stone-400 ${ROLE_STYLES[t.role] || 'bg-stone-700 text-stone-100'}`}>{t.role}</span>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-sm print:border print:border-stone-400 ${ROLE_STYLES[t.role] || 'bg-stone-700 text-stone-100'}`}>{t.role}</span>
+                    <RoleChip taskId={t.id} legacyRole={t.role} />
+                  </div>
                 </div>
                 {t.notes && <div className="text-xs text-stone-400 mt-1 italic print:text-stone-600">{t.notes}</div>}
                 <div className="flex items-center gap-2 mt-1.5 flex-wrap">
@@ -1829,8 +2355,144 @@
     // ============================================================
     const TOOLKIT_PRESETS = [
       {
+        id: "audio-generic",
+        label: "Audio · Generic Audio Ad",
+        vendor: "Audio (Generic)",
+        mediaType: "Audio",
+        spec: "File type: MP3, M4A, OGG, WAV\nFile size: 500MB, 2.2 MB\nSpot length: 15, 30 or 60 seconds\nBitrate: 160 kbps\nHosted MP3 files must have a constant bitrate.\nScript word count: Refer to publisher-specific specifications.\nVAST version (for third-party tags) — VAST 2.0 is most widely supported across all audio publishers.\n300x250 Companion Banner is needed to run alongside the audio creative (File Type: JPEG, GIF, PNG, HTML)",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "pandora",
+        label: "Audio · Pandora",
+        vendor: "Pandora",
+        mediaType: "Audio",
+        spec: "Banner Dimensions: Any size 600x600 (min) through 1080x1080 (max), 1:1 aspect ratio; or 300x250 (secondary option if 1:1 not available)\nFile Size: 100kb max file size\nFormat: JPG, GIF\n\nAudio File types: .MP3\nBitrate: 320 kbps (Hosted .MP3 files should have a constant bitrate)\nSpot length: 15 seconds or 30 seconds\nMax File Size: 2.2mb",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "spotify",
+        label: "Audio · Spotify",
+        vendor: "Spotify",
+        mediaType: "Audio",
+        spec: "Companion Banner Dimensions: 300x250, 301x301 (DV360 only)\nFile Type — Companion Banner: JPEG\nAudio File: .OGG format required for ad trafficking via Private Marketplace (PMP) and programmatic.\n\nFile Size:\n• Companion Banner: 200 KB\n• Audio File: 500 MB\n\nVolume:\n• Sample Rate: 44.1kHz\n• Bit Rate: at least 192kbps\n• Overall loudness: -16 LUFS\n• True Peak limit: -2.0 dBTP max\n\nNote: True Peak limit is a maximum (not a target). As long as integrated loudness averages -16 LUFS (±1.5 LUFS) and TPL ≤ -2.0 dB, the ad meets spec.\n\nSpot Length: Up to 30 seconds. Max length for standard audio ads is 30 seconds.\nScript Word Count: No more than 65 words for a 30-second ad.\n\nAdvertiser name + CTA required.\n• Advertiser name: ≤25 characters\n• CTA options: Apply now, Book now, Buy now, Buy tickets, Click now, Download, Find stores, Get coupon, Get info, Learn more, Listen now, More info, Pre-save, Save now, Share, Shop now, Sign up, Visit profile, Visit site",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "hulu-video",
+        label: "CTV · Hulu Video",
+        vendor: "Hulu",
+        mediaType: "Video",
+        spec: "Trafficked through Flashtalking.\n\nStandard :15s or :30s spots can now have QR codes. Creative/campaign needs to exclude mobile/tablet devices and must be flagged to programmatic specialist team for manual approval.\n\nFile Types: MOV, MP4, M4V\nFile Size: 10 GB Max\nFrame Rate: 23.98, 24, 25, 29.97, or 30 fps based on native frame rate. Constant frame rate only.\nContent: progressive scan only.\nResolution: 1920x1080 or 1280x720 (16:9)\nLetterboxing on native 1.78:1 (16:9) content is NOT allowed.\nBitrate: Constant bitrate (CBR) 10-40 Mbps. EXCEPTION: 100% graphic videos minimum bitrate is 2 Mbps.\nProfile: Main Profile @ Main Level (MP@ML)\nColor space: 4:2:2\nSingle video track\nLength: 15s, 30s & 60s",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "ctv-programmatic",
+        label: "CTV · Programmatic Video",
+        vendor: "Pathlabs (CTV)",
+        mediaType: "Video",
+        spec: "File Type: MP4\nFile Size Limit: 10GB\nLength: 15-60 seconds (Recommended: 15s, 30s)\nAspect Ratio: 16:9\nQuality: 1080px (1920x1080)\nResolution: 1920x1080 (Highest Quality) — 1280x720 (Low Quality)\nFrame Rate: 23.98 or 29.97\nBitrate: ≥2500 kbps and ≤30000 kbps\nTags: VAST 2.0 only (VPAID and MRAID tags are NOT supported)\n\nReference: https://thetradedesk-general.s3.amazonaws.com/ttdctv/ctv_creative_req_specsheet_v1.pdf",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "youtube-tv",
+        label: "CTV · YouTube TV",
+        vendor: "YouTube TV",
+        mediaType: "Video",
+        spec: "Creatives: only non-skippable in-stream and :06s bumper ads are eligible for YouTube TV.\n\n:06s and :15s non-skippable ads are supported.\n:10s and :45s are NOT supported.\n\nCompanion Banner: 300x60 — JPEG, GIF, or PNG\n\nImplementation:\n• YouTube TV — DV360\n• YouTube TV — Google Ads\n\nCopy:\n• 1 Headline (30 characters max)\n• 1 Long Headline (90 characters max)\n• 1 Description (90 characters max)\n• Call to Action",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "dooh-horizontal",
+        label: "DOOH · Static Horizontal",
+        vendor: "Pathlabs",
+        mediaType: "DOOH Static",
+        spec: "Dimensions: 1920x1080 (horizontal)\nExisting Media Files: .psd or .ai\nQR Code Destination: URL\nAudio: Not available\n\nBest Practices:\n• Copy — use as little text as possible to allow branding and imagery to shine.",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "dooh-vertical",
+        label: "DOOH · Static Vertical",
+        vendor: "Pathlabs",
+        mediaType: "DOOH Static",
+        spec: "Dimensions: 1080x1920 (vertical)\nExisting Media Files: .psd or .ai\nQR Code Destination: URL\nAudio: Not available\n\nBest Practices:\n• Copy — use as little text as possible to allow branding and imagery to shine.",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "dooh-video",
+        label: "DOOH · Video",
+        vendor: "Pathlabs (DOOH)",
+        mediaType: "Video",
+        spec: "Dimensions: 1080x1920, 1920x1080\nVideo: .mp4 or .mov\nExisting Media Files: .psd or .ai\nQR Code Destination: URL\nAudio: Accepted (inventory limitations apply)\n\nBest Practices:\n\nVideo: Videos must be formatted as MP4. Length varies by inventory. Most common video lengths are 6s & 15s.\n\nAudio: Audio availability depends on OOH inventory provider. If the screen is audio compatible, audio will auto-play for passing viewers.\n\nCopy: Use as little text as possible to allow branding and imagery to shine.\n• Headline: 100 characters\n• Additional copy: 100 characters\n\nQR Codes (Optional): Should be high contrast and large enough to scan from a distance. QR codes can be produced by Pathlabs/MiQ or shared by the brand directly. If Pathlabs/MiQ produces, scan reports are available.",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "display-ttd-gif",
+        label: "Display · TTD Animated GIF",
+        vendor: "Pathlabs (TTD)",
+        mediaType: "Display",
+        spec: "Common Sizes: 160x600, 300x250, 300x600, 728x90, 300x50, 320x50\nFile Size: 150 KB or smaller (for both first-party and third-party creatives)\nFile Type: GIF\nAnimation Limit: Maximum 15 seconds of looping, slower than 5 FPS.\nOrientation: Must not appear sideways or upside down.",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "display-ttd-html5",
+        label: "Display · TTD HTML5",
+        vendor: "Pathlabs (TTD)",
+        mediaType: "Display",
+        spec: "Trafficked through Flashtalking.\n\nFile Type: HTML\nInitial Load: 300 KB maximum (200 KB recommended)\nSubload: 600 KB maximum\nInitial File Load Count: 10 files maximum\nSubload File Count: 100 files maximum\nFile Size: 5 MB maximum\nUser-Initiated Load: 2.2 MB maximum (recommended)\nClick Tag Tracking: Pathlabs team can implement through Flashtalking when trafficking.\n\nStatic back-up is not required, but recommended in case HTML5 fails.\nHTML CANNOT have hardcoded URL embedded.",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "display-ttd-static",
+        label: "Display · TTD Static",
+        vendor: "Pathlabs (TTD)",
+        mediaType: "Display",
+        spec: "Dimensions: 160x600, 300x250, 300x600, 728x90, 300x50, 320x50\nFile Size: 150 KB or smaller (for both first-party and third-party creatives)\nFile Types: JPEG & PNG\nOrientation: Must not appear sideways or upside down.",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "demandgen",
+        label: "Google · DemandGen",
+        vendor: "Google DemandGen",
+        mediaType: "Multi-format",
+        spec: "SINGLE IMAGE AD (up to 20 images):\n• Landscape 1.91:1 — min 600x314, recommend 1200x628 (5MB max)\n• Square 1:1 — min 300x300, recommend 1200x1200 (5MB max)\n• Portrait 4:5 (optional) — min 480x600, recommend 960x1200 (5MB max)\n• Vertical 9:16 (optional) — min 1080x1920 (5MB max)\nBest practice: 3 of each aspect ratio for max placement coverage.\nNote: GIF accepted, but only static version displays.\n\nSingle Image Text:\n• Headlines: up to 5 at 40 chars each\n• Description: up to 5 at 90 chars each\n• CTA (choose one): Automated, Apply Now, Book Now, Contact Us, Download, Learn More, Visit Site, Shop Now, Sign Up, Get Quote, Subscribe, See More\n• Business Name: 25 chars max\n\nVIDEO ADS (up to 5 videos):\n• YouTube or uploaded; 1-5 videos ≥10s. Best practice 15s.\n• Aspect ratios: landscape 16:9, portrait 9:16, square 1:1\n• Logo: 1:1 square\n• Headlines: up to 5 at 40 chars\n• Long Headline: up to 5 at 90 chars\n• Descriptions: up to 5 at 90 chars\n• Business Name: 25 chars max\n\nCAROUSEL IMAGE ADS:\n• Ratios: 1.91:1, 1:1, 4:5\n• Up to 10 cards, 3 images per card\n• Headline per card: 40 chars max\n• Logo: 1:1 square\n• Description: 90 chars max\n• Business Name: 25 chars max",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "gdn",
+        label: "Google · Display Network (GDN)",
+        vendor: "Google Display Network",
+        mediaType: "Responsive Display",
+        spec: "TEXT REQUIREMENTS:\n• Headlines: 1-5 (30 characters max each)\n• 1 Long Headline (90 characters max)\n• Descriptions: 1-5 (90 characters max)\n• Business name: 25 characters max (must match name on business verification document)\n\nRecommended (not required):\n• Call to action — choose one: Apply Now, Book Now, Contact Us, Download, Learn More, Install, Visit Site, Shop Now, Sign Up, Get Quote, Subscribe, See More\n\nIMAGE REQUIREMENTS (max 15 images per ad):\n• Horizontal 1.91:1 — 1200x628 (min 600x314), 1-15 images, recommend 5\n• Square 1:1 — 600x600 (min 300x300), 1-15 images, recommend 5\n• Vertical 9:16 — 1080x1920, 1-15 images\n• Logo 1:1 — 1200x1200 (min 128x128), 1-5 images (≥1 required)\n• Optional Logo 4:1 — 1200x300 (min 512x128), 1-5 images\n\nAll Display campaigns require ≥1 image of: Horizontal, Logo 1:1, and Square.\n\nVIDEO REQUIREMENTS (optional, max 5 videos):\n• Videos can be from a YouTube link\n• Horizontal 16:9 — preferred 30s, 1-5 videos, recommend 2\n• Square 1:1 — preferred 30s, 1-5 videos, recommend 2\n• Vertical 2:3 — preferred 30s, 1-5 videos, recommend 2",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "pmax",
+        label: "Google · PMax",
+        vendor: "Google PMax",
+        mediaType: "Multi-format",
+        spec: "TEXT:\n• Headlines: max 15, 30 chars each\n• Long Headlines: max 5, 90 chars each\n• Descriptions: max 5, 90 chars each\n• 1 Business name (25 chars max)\n• CTA (optional): Automated, Learn More, Get Quote, Apply Now, Sign Up, Contact Us, Subscribe, Download, Book Now, Shop Now\n\nVIDEOS (max 5):\n• HD video for optimal quality\n• Format: MPG (MPEG-2 or MPEG-4)\n• ≥1 vertical video 10-60s for Shorts eligibility\n• Audio files (MP3, WAV, PCM) NOT accepted on YouTube\n• Must upload to YouTube as public or unlisted\n\nIMAGES (max 20):\n• Horizontal 1.91:1 — 1200x628 (min 600x314)\n• Square 1:1 — 600x600 (min 300x300)\n• Vertical 4:5 — 960x1200\n\nLOGOS (max 5):\n• Logo 1:1 — 1200x1200 (min 128x128), ≥1 required\n• Optional Logo 4:1 — 1200x300 (min 512x128)\n\nReferences:\n• Image specs: https://support.google.com/google-ads/answer/14530211\n• Video specs: https://support.google.com/google-ads/answer/14528532",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "google-search",
+        label: "Google · Search Copy",
+        vendor: "Google Search",
+        mediaType: "Copy",
+        spec: "Headlines:\n• Minimum required: 3\n• Maximum allowed: 15\n• Character limit: 30 characters each\n\nDescriptions:\n• Minimum required: 2\n• Maximum allowed: 4\n• Character limit: 90 characters each\n\nIDEAL: 8-12 headlines, 3-4 descriptions.",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "meta-carousel",
+        label: "Meta · Carousel",
+        vendor: "Facebook + Instagram",
+        mediaType: "Carousel",
+        spec: "Carousel ads can use images only, videos only, or a combination.\n\nImage File Type: JPG or PNG\nVideo File Type: MP4, MOV, or GIF\nRatio: 1:1 or 4:5\nResolution: ≥1080x1080\nNumber of Carousel Cards: 2 to 10\nImage Max File Size: 30MB\nVideo Max File Size: 4GB\nVideo Duration: 1 second to 240 minutes\nAspect Ratio Tolerance: 3%\n\nBest practice: keep aspect ratios consistent across product images (all 1:1 or all 4:5) to prevent automated adjustments. Square 1:1 with consistent ratios recommended for all videos in a carousel.\n\nCOPY:\n• Primary text: 2,200 chars max (recommended ≤125)\n• Headline: 255 chars max (recommended ≤40)\n• Description (optional): 200 chars max (recommended ≤30)\n• CTA\n\nNeed the same number of headlines and descriptions as creatives planned.",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
         id: "meta-static-1x1",
-        label: "Meta Static 1:1",
+        label: "Meta · Static 1:1",
         vendor: "Facebook + Instagram",
         mediaType: "Static",
         spec: "1:1 ratio — 1080x1080px.\n\n2 Options to Test:\n• Movement + No Movement\n• Creative Elements vs None\n• Message A vs Message B\n\nOpen to options.",
@@ -1838,7 +2500,7 @@
       },
       {
         id: "meta-static-9x16",
-        label: "Meta Static 9:16",
+        label: "Meta · Static 9:16",
         vendor: "Facebook + Instagram",
         mediaType: "Static",
         spec: "9:16 ratio — 1080x1920px.\n\nSame creative as 1:1 version, resized for stories/reels placements.",
@@ -1846,7 +2508,7 @@
       },
       {
         id: "meta-video-1x1",
-        label: "Meta Video 1:1",
+        label: "Meta · Video 1:1",
         vendor: "Facebook + Instagram",
         mediaType: "Video",
         spec: "1:1 ratio — 1080x1080px. Video format for feed placements.",
@@ -1854,59 +2516,107 @@
       },
       {
         id: "meta-video-9x16",
-        label: "Meta Video 9:16",
+        label: "Meta · Video 9:16",
         vendor: "Facebook + Instagram",
         mediaType: "Video",
         spec: "9:16 ratio — 1080x1920px. Video format for stories/reels placements.",
         mediaBuyer: "Sydnie/Pathlabs"
       },
       {
-        id: "google-search",
-        label: "Google Search Copy",
-        vendor: "Google Search",
-        mediaType: "Copy",
-        spec: "Headlines:\n• Minimum required: 3\n• Maximum allowed: 15\n• Character limit: 30 characters each\n\nDescriptions:\n• Minimum required: 2\n• Maximum allowed: 4\n• Character limit: 90 characters each\n\nIDEAL: 8-12 headlines, 3-4 descriptions.",
+        id: "native-static",
+        label: "Native · Static",
+        vendor: "Pathlabs (Native)",
+        mediaType: "Static",
+        spec: "IMAGE (static):\n• Min 500x500 pixels\n• Recommended 1200x1200 pixels\n• JPEG or PNG (image should be free of text)\n• File size under 2MB\n\nLOGO:\n• Format: JPEG / transparent PNG recommended\n• Min size: 300x300\n• Recommended: 2 versions (light & dark)\n• Aspect ratio: 1:1\n\nCOPY:\n• Headline: 30 characters or less (copy should stand on its own)\n• Caption: 200 characters or less (copy should stand on its own)\n• Brand Name: 30 characters max\n\n3rd Party Trackers:\n• Accepted as long as they are 1x1 image tag\n• All trackers must be secure (https://)\n• JS trackers accepted for viewability (IAS/DV/Moat)",
         mediaBuyer: "Sydnie/Pathlabs"
       },
       {
-        id: "dooh-vertical",
-        label: "DOOH Static (Vertical)",
-        vendor: "Pathlabs",
-        mediaType: "DOOH Static",
-        spec: "Dimensions: 1080x1920 (vertical)\nExisting Media Files: .psd or .ai\nQR Code Destination: URL\nAudio: Not available\n\nBest Practices:\n• Copy — use as little text as possible to allow branding and imagery to shine.",
+        id: "olv-video",
+        label: "OLV · Programmatic Video",
+        vendor: "Pathlabs (OLV)",
+        mediaType: "Video",
+        spec: "Trafficked through Flashtalking.\n\nFile Type: MP4, FLV, WEBM, MOV, MPG, MPEG\nFile Size Limit: 200 MB\nLength: 5-300 seconds (Recommended: 6s, 15s, 30s, 60s)\nAspect Ratio: 16:9 (recommended) or 4:3\nRecommended Size: 1920x1080 (16:9) or 640x480 (4:3)\nMin Size: 640x360 (16:9) or 480x360 (4:3)\nQuality: 1080px (1920x1080)\nBitrate: ≥2500 kbps and ≤30000 kbps",
         mediaBuyer: "Sydnie/Pathlabs"
       },
       {
-        id: "dooh-horizontal",
-        label: "DOOH Static (Horizontal)",
-        vendor: "Pathlabs",
-        mediaType: "DOOH Static",
-        spec: "Dimensions: 1920x1080 (horizontal)\nExisting Media Files: .psd or .ai\nQR Code Destination: URL\nAudio: Not available\n\nBest Practices:\n• Copy — use as little text as possible to allow branding and imagery to shine.",
+        id: "snapchat-ar",
+        label: "Snapchat · AR Lenses",
+        vendor: "Snapchat",
+        mediaType: "AR Filter",
+        spec: "Static Filter:\n• .png files\n• Composition size: 945x2048\n\nMoving Images Filter:\n• .gif files\n• Composition size: 720x1560\n• Duration: 1-3 seconds",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "snapchat-main",
+        label: "Snapchat · Single Image/Video/Story/Collection",
+        vendor: "Snapchat",
+        mediaType: "Multi-format",
+        spec: "Full Screen Canvas: 1080x1920px, 9:16 aspect ratio\nDuration: 3-180 seconds (file size ≤1 GB). AR Filter Ads: 1-3 seconds.\n\nVideo: .mp4 or .mov, H.264 encoded\nImage: .jpg or .png (Ads Manager only)\nVideo File Size: ≤1 GB\nImage File Size: ≤5 MB\n\nAudio:\n• PCM or AAC codec\n• ≥192 kbps\n• 16 or 24 bit only\n\nPhoto Image:\n• Image converts to a 5-second video\n• PNG or JPEG\n• Min 1080x1920px\n• Required ratio 9:16\n• Max file size 5MB\n\nCOPY (for ads requiring it — Single Image/Video, Story, Collection. NOT required for Commercials, AR Lenses, AR Filters):\n• Brand Name: 25 chars with spaces max\n• Headline: 34 chars with spaces max",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "tiktok-spark",
+        label: "TikTok · Spark Ads",
+        vendor: "TikTok",
+        mediaType: "Video",
+        spec: "Resolution: ≥540x960px, ≥640x640px, or ≥960x540px\nAspect Ratio: 9:16, 1:1, or 16:9\nBitrate: ≥516 kbps\nLength: 5-60 seconds (Recommended: 6s & 15s)\nFile Type: .mp4, .mov, .mpeg, .3gp, or .avi\nMax File Size: ≤500MB\n\nCopy:\n• Ad Caption: 100 characters max (including #, spaces, or punctuation)",
         mediaBuyer: "Sydnie/Pathlabs"
       },
       {
         id: "lamar-billboard",
-        label: "LAMAR Digital Billboard",
+        label: "Traditional · LAMAR Digital Billboard",
         vendor: "LAMAR OOH",
         mediaType: "OOH Digital Billboard",
         spec: "Design using Photoshop & Illustrator — 400px H x 1400px W @ 72ppi\n\nPixel Dimensions / Resolution:\nAutoscale templates maximize image quality across the digital network regardless of display size. This panel is eligible for the autoscale bulletin template (400px H x 1400px W @ 72ppi).\n\nCompatible Software: Adobe Photoshop, Illustrator, InDesign\n\nAcceptable Formats: Save all RGB artwork as .JPG, .BMP or .GIF at maximum quality. NO ANIMATED GIFS. Submit the file to your Lamar representative for uploading.\n\nColor Matching: Create in RGB mode. For best color matching, convert to the sRGB color profile.\n\nDesign Tips:\n• Use RGB (additive), not CMYK\n• Black: R0 G0 B0\n• Convert PMS to RGB\n• Rich, bold backgrounds for day; pastel for night\n• Text: bold simple fonts, readable at ≥15\" height\n• Design: one message, strong focal point, readable fonts, contrasting colors, brevity wins",
         mediaBuyer: "Jim / LAMAR"
       },
       {
+        id: "magazine-full-page",
+        label: "Traditional · Magazine Full Page",
+        vendor: "",
+        mediaType: "Magazine",
+        spec: "Full Page — 8.5\" x 11.125\" (Bleed Included)",
+        mediaBuyer: "Jim"
+      },
+      {
         id: "prisma-direct-mail",
-        label: "Prisma Direct Mail 6x9",
+        label: "Traditional · Prisma Direct Mail 6x9",
         vendor: "Prisma (Direct Mail)",
         mediaType: "Direct Mail",
         spec: "Flat Size: 6\" x 9\"\nFinished Size: same\nPaper: 130# Silk Cover\nMedia: Provided by Client\n\nProofs:\n• Press Proof: PDF\n• No Press: 4/4 process 2 sides — VARIABLE DATA\n\nCoverage/Bleeds: 50%, Bleeds\nCustomer Press OK: No\nBinding: Gloss UV 2 Sides, Trim",
         mediaBuyer: "Jim"
       },
       {
-        id: "magazine-full-page",
-        label: "Magazine Full Page",
+        id: "yt-in-feed",
+        label: "YouTube · In-Feed Ads",
+        vendor: "YouTube",
+        mediaType: "Video",
+        spec: "Resolution: 720p (Standard HD)\nMin px:\n• Horizontal 16:9 — 1280x720\n• Vertical 9:16 — 720x1280\n• Square 1:1 — 480x480\n\nMin px for SD:\n• Horizontal 16:9 — 640x480\n• Vertical 9:16 — 480x640\n• Square 1:1 — 480x480\n\nFormat: .MPG (MPEG-2 or MPEG-4)\nFile Size: <256 GB\nLength: Any. Best practice — Awareness :15-:20, Consideration 2:00-3:00, Action :15-:20\n\nVideo asset must be a YouTube video link uploaded to a specific YouTube channel.\nCompanion banner recommended (300x60) — appears next to video on Desktop. If not provided, Google Ads autogenerates from the video itself.\n\nCOPY:\n• Headline: up to 2 lines, 40 chars per line\n• Description: up to 2 lines, 35 chars per line\n• Call to Action",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "yt-non-skip",
+        label: "YouTube · Non-Skippable In-stream",
+        vendor: "YouTube",
+        mediaType: "Video",
+        spec: "Resolution: 720p (Standard HD)\nMin px:\n• Horizontal 16:9 — 1280x720\n• Vertical 9:16 — 720x1280\n• Square 1:1 — 480x480\n\nMin px for SD:\n• Horizontal 16:9 — 640x480\n• Vertical 9:16 — 480x640\n• Square 1:1 — 480x480\n\nFormat: .MPG (MPEG-2 or MPEG-4)\nFile Size: <256 GB\nLength: ≤:15 (≤:20 in certain markets)\n\nVideo asset must be a YouTube video link uploaded to a specific YouTube channel.\nCompanion banner recommended (300x60). If not provided, Google Ads autogenerates from the video itself.\n\nCOPY:\n• Headline / Description: <15 characters\n• Call to Action",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "yt-skippable",
+        label: "YouTube · Skippable In-Stream",
+        vendor: "YouTube",
+        mediaType: "Video",
+        spec: "Resolution: 720p (Standard HD)\nMin px:\n• Horizontal 16:9 — 1280x720\n• Vertical 9:16 — 720x1280\n• Square 1:1 — 480x480\n\nMin px for SD:\n• Horizontal 16:9 — 640x480\n• Vertical 9:16 — 480x640\n• Square 1:1 — 480x480\n\nFormat: .MPG (MPEG-2 or MPEG-4)\nFile Size: <256 GB\nLength: No longer than 3 minutes. No minimum.\nBest practice: Awareness :15-:20, Consideration 2:00-3:00, Action :15-:20\n\nVideo asset must be a YouTube video link uploaded to a specific YouTube channel.\nCompanion banner recommended (300x60). If not provided, Google Ads autogenerates from the video itself.\n\nCOPY:\n• Headline / Description: <15 characters\n• Call to Action",
+        mediaBuyer: "Sydnie/Pathlabs"
+      },
+      {
+        id: "blank-custom",
+        label: "+ Blank · Custom Placement",
         vendor: "",
-        mediaType: "Magazine",
-        spec: "Full Page — 8.5\" x 11.125\" (Bleed Included)",
-        mediaBuyer: "Jim"
+        mediaType: "",
+        spec: "",
+        mediaBuyer: "Sydnie/Pathlabs"
       }
     ];
 
@@ -2357,24 +3067,69 @@
 
     // ---- PresetShelf ----
     function PresetShelf({ onPick }) {
+      const [query, setQuery] = useState('');
+
+      const filtered = useMemo(() => {
+        const q = query.trim().toLowerCase();
+        if (!q) return TOOLKIT_PRESETS;
+        return TOOLKIT_PRESETS.filter((p) => {
+          // always keep blank chip visible so users can grab a one-off
+          if (p.id === 'blank-custom') return true;
+          return (
+            (p.label || '').toLowerCase().includes(q) ||
+            (p.vendor || '').toLowerCase().includes(q) ||
+            (p.mediaType || '').toLowerCase().includes(q)
+          );
+        });
+      }, [query]);
+
       return (
         <div className="bg-stone-900 border border-stone-800 rounded-sm p-4">
-          <div className="flex items-center gap-2 mb-3">
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
             <Zap className="w-3.5 h-3.5 text-orange-500" fill="currentColor" strokeWidth={0} />
             <h3 className="text-[11px] font-black uppercase tracking-[0.2em] text-amber-50">Presets</h3>
             <span className="text-[10px] text-stone-500">· Click to add a pre-filled placement</span>
+            <div className="ml-auto flex items-center gap-1.5">
+              <input
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Filter (e.g. meta, spotify, ctv)"
+                className="px-2 py-1 bg-stone-800 border border-stone-700 rounded-sm text-xs text-stone-100 placeholder:text-stone-500 focus:outline-none focus:ring-2 focus:ring-amber-400 w-56"
+              />
+              {query && (
+                <button
+                  onClick={() => setQuery('')}
+                  className="text-[10px] text-stone-400 hover:text-amber-400 uppercase tracking-wider"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
           </div>
           <div className="flex flex-wrap gap-1.5">
-            {TOOLKIT_PRESETS.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => onPick(p)}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 bg-stone-800 border border-stone-700 text-stone-200 rounded-sm text-xs font-semibold hover:bg-orange-500 hover:border-orange-400 hover:text-stone-950 transition-colors"
-              >
-                <Plus className="w-3 h-3" />
-                {p.label}
-              </button>
-            ))}
+            {filtered.length === 0 && (
+              <div className="text-[11px] text-stone-500 italic px-1 py-1">
+                No presets match "{query}". Use Blank · Custom Placement for a one-off.
+              </div>
+            )}
+            {filtered.map((p) => {
+              const isBlank = p.id === 'blank-custom';
+              const baseClasses = "flex items-center gap-1.5 px-2.5 py-1.5 rounded-sm text-xs font-semibold transition-colors";
+              const styleClasses = isBlank
+                ? "bg-transparent border border-dashed border-amber-400/60 text-amber-300 hover:bg-amber-400 hover:text-stone-950 hover:border-amber-400"
+                : "bg-stone-800 border border-stone-700 text-stone-200 hover:bg-orange-500 hover:border-orange-400 hover:text-stone-950";
+              return (
+                <button
+                  key={p.id}
+                  onClick={() => onPick(p)}
+                  className={`${baseClasses} ${styleClasses}`}
+                >
+                  <Plus className="w-3 h-3" />
+                  {p.label}
+                </button>
+              );
+            })}
           </div>
         </div>
       );
