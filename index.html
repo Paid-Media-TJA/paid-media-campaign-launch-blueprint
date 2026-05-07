@@ -27,7 +27,7 @@
       FolderOpen, Plus, X, Info, Zap, Download, History, ChevronDown, ChevronUp,
       RefreshCw, CalendarClock, CircleDashed, SkipForward, Undo2, LogOut, LogIn,
       ArrowLeft, Archive, ArchiveRestore, LayoutGrid, CalendarDays, Search,
-      ChevronLeft, ChevronRight, Loader2, AlertCircle, Flag, Filter
+      ChevronLeft, ChevronRight, Loader2, AlertCircle, Flag, Filter, Pencil
     } = LucideReact;
 
     // ============================================================
@@ -60,7 +60,64 @@
     function fmtDateShort(d) { return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
     function fmtDateIso(d) { return d.toISOString().split('T')[0]; }
     function daysBetween(a, b) { return Math.round((b - a) / (1000 * 60 * 60 * 24)); }
+    // Signed business-day count from a -> b (Mon-Fri only). Negative if b is before a.
+    function businessDaysBetween(a, b) {
+      const start = startOfDay(a);
+      const end = startOfDay(b);
+      if (+start === +end) return 0;
+      const dir = end > start ? 1 : -1;
+      let count = 0;
+      const cur = new Date(start);
+      while (+cur !== +end) {
+        cur.setDate(cur.getDate() + dir);
+        const d = cur.getDay();
+        if (d !== 0 && d !== 6) count += dir;
+      }
+      return count;
+    }
     function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+
+    // ============================================================
+    // TOOLKIT HANDOFF COUNTDOWN
+    // Default lead time = 7 business days before launch (Pathlabs window: 6-8).
+    // Handoff = launch_date − N business days. Computes a label + tone for UI.
+    // ============================================================
+    const TOOLKIT_HANDOFF_DEFAULT = 7;
+    function computeToolkitHandoff(campaign) {
+      const lead = (campaign && campaign.data && campaign.data.toolkit && Number.isFinite(campaign.data.toolkit.handoffDaysBeforeLaunch))
+        ? campaign.data.toolkit.handoffDaysBeforeLaunch
+        : TOOLKIT_HANDOFF_DEFAULT;
+      const launch = campaign && campaign.launch_date ? parseDateSafe(campaign.launch_date) : null;
+      if (!launch) {
+        return { lead, launch: null, handoff: null, businessDaysLeft: null, label: 'Set a launch date', tone: 'muted' };
+      }
+      const handoff = startOfDay(addBusinessDays(launch, -lead));
+      const today = startOfDay(new Date());
+      const businessDaysLeft = businessDaysBetween(today, handoff);
+      let label, tone;
+      if (businessDaysLeft < 0) {
+        const n = Math.abs(businessDaysLeft);
+        label = `Overdue by ${n} business day${n === 1 ? '' : 's'}`;
+        tone = 'red';
+      } else if (businessDaysLeft === 0) {
+        label = 'Pass to Paid Media today';
+        tone = 'red';
+      } else if (businessDaysLeft <= 5) {
+        label = `${businessDaysLeft} business day${businessDaysLeft === 1 ? '' : 's'} until pass to Paid Media`;
+        tone = 'orange';
+      } else {
+        label = `${businessDaysLeft} business days until pass to Paid Media`;
+        tone = 'green';
+      }
+      return { lead, launch, handoff, businessDaysLeft, label, tone };
+    }
+    const HANDOFF_TONES = {
+      green:  { text: 'text-emerald-300', bg: 'bg-emerald-950/40', border: 'border-emerald-800/60', dot: 'bg-emerald-400' },
+      orange: { text: 'text-orange-300',  bg: 'bg-orange-950/40',  border: 'border-orange-800/60',  dot: 'bg-orange-400' },
+      red:    { text: 'text-red-300',     bg: 'bg-red-950/40',     border: 'border-red-800/60',     dot: 'bg-red-400' },
+      muted:  { text: 'text-stone-400',   bg: 'bg-stone-900',      border: 'border-stone-800',      dot: 'bg-stone-600' },
+    };
+
     function parseDateSafe(s) {
       if (!s) return null;
       // Handle 'YYYY-MM-DD' consistently as local noon
@@ -71,100 +128,104 @@
 
     // ============================================================
     // MASTER TASK LIBRARY (from original blueprint)
+    // +1 day buffer for handoff to Pathlabs: every task with role 'TJA'
+    // (Paid Media — Sydnie) has its daysPrior incremented by 1 so the
+    // task lands one day earlier in the schedule, giving a buffer day
+    // to hand off work to Pathlabs (third-party trafficker).
     // ============================================================
     const TASKS = [
       // === CONTRACTING & KICKOFF ===
       { id: 'kickoff-call', phase: 'Contracting & Kickoff', name: 'Kickoff call scheduled with client', daysPrior: 10, role: 'AM' },
-      { id: 'campaign-brief', phase: 'Contracting & Kickoff', name: 'Campaign brief reviewed & approved', daysPrior: 8, role: 'TJA' },
-      { id: 'kpis-documented', phase: 'Contracting & Kickoff', name: 'KPIs & success metrics documented', daysPrior: 7, role: 'TJA', notes: 'Align with client on measurable success criteria' },
-      { id: 'naming-conventions', phase: 'Contracting & Kickoff', name: 'Campaign naming conventions confirmed', daysPrior: 7, role: 'TJA', notes: 'Format for reporting rollups' },
-      { id: 'utm-conventions', phase: 'Contracting & Kickoff', name: 'UTM naming conventions confirmed', daysPrior: 7, role: 'TJA' },
-      { id: 'budgets', phase: 'Contracting & Kickoff', name: 'Budgets Delivered', daysPrior: 5, role: 'TJA', notes: 'Email or Asana preferred for tracking' },
+      { id: 'campaign-brief', phase: 'Contracting & Kickoff', name: 'Campaign brief reviewed & approved', daysPrior: 9, role: 'TJA' },
+      { id: 'kpis-documented', phase: 'Contracting & Kickoff', name: 'KPIs & success metrics documented', daysPrior: 8, role: 'TJA', notes: 'Align with client on measurable success criteria' },
+      { id: 'naming-conventions', phase: 'Contracting & Kickoff', name: 'Campaign naming conventions confirmed', daysPrior: 8, role: 'TJA', notes: 'Format for reporting rollups' },
+      { id: 'utm-conventions', phase: 'Contracting & Kickoff', name: 'UTM naming conventions confirmed', daysPrior: 8, role: 'TJA' },
+      { id: 'budgets', phase: 'Contracting & Kickoff', name: 'Budgets Delivered', daysPrior: 6, role: 'TJA', notes: 'Email or Asana preferred for tracking' },
       { id: 'io-sent', phase: 'Contracting & Kickoff', name: 'IO Sent', daysPrior: 5, role: 'AM' },
-      { id: 'io-signed', phase: 'Contracting & Kickoff', name: 'IO Signed', daysPrior: 2, role: 'TJA' },
+      { id: 'io-signed', phase: 'Contracting & Kickoff', name: 'IO Signed', daysPrior: 3, role: 'TJA' },
       { id: 'billing-contact', phase: 'Contracting & Kickoff', name: 'Billing contact confirmed', daysPrior: 5, role: 'AM', notes: 'For Mina / invoicing' },
 
       // === ACCOUNT ACCESS & SETUP ===
-      { id: 'google-ads-access', phase: 'Account Access', name: 'Google Ads account access confirmed', daysPrior: 5, role: 'TJA', requiresAny: ['googleSearch', 'programmatic'] },
-      { id: 'microsoft-ads-access', phase: 'Account Access', name: 'Microsoft Ads account access confirmed', daysPrior: 5, role: 'TJA', requires: ['microsoft'] },
-      { id: 'meta-bm-access', phase: 'Account Access', name: 'Meta Business Manager access confirmed', daysPrior: 5, role: 'TJA', requires: ['meta'] },
-      { id: 'tiktok-access', phase: 'Account Access', name: 'TikTok Ads Manager access confirmed', daysPrior: 5, role: 'TJA', requires: ['tiktok'] },
-      { id: 'pinterest-access', phase: 'Account Access', name: 'Pinterest Ads access confirmed', daysPrior: 5, role: 'TJA', requires: ['pinterest'] },
+      { id: 'google-ads-access', phase: 'Account Access', name: 'Google Ads account access confirmed', daysPrior: 6, role: 'TJA', requiresAny: ['googleSearch', 'programmatic'] },
+      { id: 'microsoft-ads-access', phase: 'Account Access', name: 'Microsoft Ads account access confirmed', daysPrior: 6, role: 'TJA', requires: ['microsoft'] },
+      { id: 'meta-bm-access', phase: 'Account Access', name: 'Meta Business Manager access confirmed', daysPrior: 6, role: 'TJA', requires: ['meta'] },
+      { id: 'tiktok-access', phase: 'Account Access', name: 'TikTok Ads Manager access confirmed', daysPrior: 6, role: 'TJA', requires: ['tiktok'] },
+      { id: 'pinterest-access', phase: 'Account Access', name: 'Pinterest Ads access confirmed', daysPrior: 6, role: 'TJA', requires: ['pinterest'] },
       { id: 'dsp-setup', phase: 'Account Access', name: 'DSP / Pathlabs account setup', daysPrior: 7, role: 'SCA', requiresAny: ['programmatic', 'ctv', 'dooh'], notes: 'Nexxen / AdSquare integrations as needed' },
 
       // === TRACKING & ANALYTICS ===
       { id: 'confirm-conv', phase: 'Tracking & Analytics', name: 'Confirm conversions with client', daysPrior: 7, role: 'AM', notes: 'What exactly are we tracking on which LPs?' },
       { id: 'gtm-ga-instr', phase: 'Tracking & Analytics', name: 'GTM & GA instructions provided', daysPrior: 6, role: 'AM', notes: 'Pathlabs provides instructions to grant access and/or install' },
-      { id: 'gtm-placed', phase: 'Tracking & Analytics', name: 'GTM container placed / access granted', daysPrior: 5, role: 'TJA', notes: 'Pathlabs provides GTM code if new GTM required', requires: ['newGTM'] },
-      { id: 'ga-access', phase: 'Tracking & Analytics', name: 'GA account access granted', daysPrior: 5, role: 'TJA', notes: 'Client sends access request to advertiser' },
-      { id: 'ga4-events', phase: 'Tracking & Analytics', name: 'GA4 custom events configured', daysPrior: 4, role: 'TJA', notes: 'Match events to conversion goals' },
-      { id: 'enhanced-conv', phase: 'Tracking & Analytics', name: 'Enhanced conversions setup (Google Ads)', daysPrior: 3, role: 'TJA', requires: ['googleSearch'] },
-      { id: 'meta-capi', phase: 'Tracking & Analytics', name: 'Meta Conversions API configured', daysPrior: 3, role: 'TJA', requires: ['meta'], notes: 'Server-side tracking for iOS14+ attribution' },
-      { id: 'callrail-access', phase: 'Tracking & Analytics', name: 'CallRail account access', daysPrior: 5, role: 'TJA', requires: ['callTracking'] },
-      { id: 'callrail-numbers', phase: 'Tracking & Analytics', name: 'CallRail numbers provisioned', daysPrior: 3, role: 'TJA', requires: ['callTracking'] },
-      { id: 'call-tracking-qa', phase: 'Tracking & Analytics', name: 'Call tracking QA (test calls placed)', daysPrior: 2, role: 'TJA', requires: ['callTracking'] },
-      { id: 'gtm-published', phase: 'Tracking & Analytics', name: 'GTM changes published', daysPrior: 2, role: 'TJA', notes: 'Pathlabs will not have publish permissions' },
-      { id: 'client-pixel-qa', phase: 'Tracking & Analytics', name: 'Client confirms pixels firing', daysPrior: 2, role: 'TJA', notes: 'Pathlabs cannot verify if they did not place', requires: ['clientPlacesPixels'] },
+      { id: 'gtm-placed', phase: 'Tracking & Analytics', name: 'GTM container placed / access granted', daysPrior: 6, role: 'TJA', notes: 'Pathlabs provides GTM code if new GTM required', requires: ['newGTM'] },
+      { id: 'ga-access', phase: 'Tracking & Analytics', name: 'GA account access granted', daysPrior: 6, role: 'TJA', notes: 'Client sends access request to advertiser' },
+      { id: 'ga4-events', phase: 'Tracking & Analytics', name: 'GA4 custom events configured', daysPrior: 5, role: 'TJA', notes: 'Match events to conversion goals' },
+      { id: 'enhanced-conv', phase: 'Tracking & Analytics', name: 'Enhanced conversions setup (Google Ads)', daysPrior: 4, role: 'TJA', requires: ['googleSearch'] },
+      { id: 'meta-capi', phase: 'Tracking & Analytics', name: 'Meta Conversions API configured', daysPrior: 4, role: 'TJA', requires: ['meta'], notes: 'Server-side tracking for iOS14+ attribution' },
+      { id: 'callrail-access', phase: 'Tracking & Analytics', name: 'CallRail account access', daysPrior: 6, role: 'TJA', requires: ['callTracking'] },
+      { id: 'callrail-numbers', phase: 'Tracking & Analytics', name: 'CallRail numbers provisioned', daysPrior: 4, role: 'TJA', requires: ['callTracking'] },
+      { id: 'call-tracking-qa', phase: 'Tracking & Analytics', name: 'Call tracking QA (test calls placed)', daysPrior: 3, role: 'TJA', requires: ['callTracking'] },
+      { id: 'gtm-published', phase: 'Tracking & Analytics', name: 'GTM changes published', daysPrior: 3, role: 'TJA', notes: 'Pathlabs will not have publish permissions' },
+      { id: 'client-pixel-qa', phase: 'Tracking & Analytics', name: 'Client confirms pixels firing', daysPrior: 3, role: 'TJA', notes: 'Pathlabs cannot verify if they did not place', requires: ['clientPlacesPixels'] },
       { id: 'pathlabs-pixel-qa', phase: 'Tracking & Analytics', name: 'Pathlabs QA pixels after publish', daysPrior: 2, role: 'Tracking', notes: 'Pathlabs confirms tracking is working' },
-      { id: 'cross-channel-pixel', phase: 'Tracking & Analytics', name: 'Cross-channel pixel validation', daysPrior: 1, role: 'TJA', notes: 'Verify all channels tracking to same events' },
+      { id: 'cross-channel-pixel', phase: 'Tracking & Analytics', name: 'Cross-channel pixel validation', daysPrior: 2, role: 'TJA', notes: 'Verify all channels tracking to same events' },
 
       // === FIRST-PARTY DATA ===
       { id: 'liveramp-instance', phase: 'First-Party Data', name: 'Pathlabs creates LiveRamp instance', daysPrior: 15, role: 'SCA', requires: ['firstPartyData'] },
-      { id: 'client-upload', phase: 'First-Party Data', name: 'Client uploads data to LiveRamp', daysPrior: 13, role: 'TJA', notes: 'FPD lists take up to 10 business days to populate', requires: ['firstPartyData'] },
+      { id: 'client-upload', phase: 'First-Party Data', name: 'Client uploads data to LiveRamp', daysPrior: 14, role: 'TJA', notes: 'FPD lists take up to 10 business days to populate', requires: ['firstPartyData'] },
       { id: 'port-audiences', phase: 'First-Party Data', name: 'Port audiences from LiveRamp to DSP/Social', daysPrior: 3, role: 'SCA', notes: 'Porting takes up to 3 business days to activate', requires: ['firstPartyData'] },
 
       // === CREATIVE & LANDING PAGES ===
-      { id: 'creative-specs', phase: 'Creative & LPs', name: 'Creative specs documented (dimensions, aspect ratios)', daysPrior: 10, role: 'TJA', notes: 'Include all required sizes per channel' },
-      { id: 'landing-pages', phase: 'Creative & LPs', name: 'Landing pages built (w/ UTMs)', daysPrior: 7, role: 'TJA', notes: 'LPs required to set up tracking', requires: ['newLandingPages'] },
-      { id: 'lp-mobile-qa', phase: 'Creative & LPs', name: 'Landing page mobile QA', daysPrior: 5, role: 'TJA', notes: 'Test all CTAs on iOS + Android' },
-      { id: 'lp-privacy', phase: 'Creative & LPs', name: 'LP privacy policy & disclaimers verified', daysPrior: 4, role: 'TJA' },
-      { id: 'lp-conversion-test', phase: 'Creative & LPs', name: 'LP conversion path tested end-to-end', daysPrior: 3, role: 'TJA' },
-      { id: 'video-creative', phase: 'Creative & LPs', name: 'Video creative assets delivered', daysPrior: 5, role: 'TJA', requires: ['videoCreative'], notes: 'Include 15s + 30s cuts if applicable' },
-      { id: 'creative-assets', phase: 'Creative & LPs', name: 'Creative assets + copy delivered', daysPrior: 3, role: 'TJA', notes: 'Include creative names and schedule if applicable' },
-      { id: 'brand-safety', phase: 'Creative & LPs', name: 'Brand safety review', daysPrior: 3, role: 'TJA', requires: ['brandSafetyReview'] },
-      { id: 'legal-review', phase: 'Creative & LPs', name: 'Legal / compliance review', daysPrior: 3, role: 'TJA', requires: ['legalReview'] },
+      { id: 'creative-specs', phase: 'Creative & LPs', name: 'Creative specs documented (dimensions, aspect ratios)', daysPrior: 11, role: 'TJA', notes: 'Include all required sizes per channel' },
+      { id: 'landing-pages', phase: 'Creative & LPs', name: 'Landing pages built (w/ UTMs)', daysPrior: 8, role: 'TJA', notes: 'LPs required to set up tracking', requires: ['newLandingPages'] },
+      { id: 'lp-mobile-qa', phase: 'Creative & LPs', name: 'Landing page mobile QA', daysPrior: 6, role: 'TJA', notes: 'Test all CTAs on iOS + Android' },
+      { id: 'lp-privacy', phase: 'Creative & LPs', name: 'LP privacy policy & disclaimers verified', daysPrior: 5, role: 'TJA' },
+      { id: 'lp-conversion-test', phase: 'Creative & LPs', name: 'LP conversion path tested end-to-end', daysPrior: 4, role: 'TJA' },
+      { id: 'video-creative', phase: 'Creative & LPs', name: 'Video creative assets delivered', daysPrior: 6, role: 'TJA', requires: ['videoCreative'], notes: 'Include 15s + 30s cuts if applicable' },
+      { id: 'creative-assets', phase: 'Creative & LPs', name: 'Creative assets + copy delivered', daysPrior: 4, role: 'TJA', notes: 'Include creative names and schedule if applicable' },
+      { id: 'brand-safety', phase: 'Creative & LPs', name: 'Brand safety review', daysPrior: 4, role: 'TJA', requires: ['brandSafetyReview'] },
+      { id: 'legal-review', phase: 'Creative & LPs', name: 'Legal / compliance review', daysPrior: 4, role: 'TJA', requires: ['legalReview'] },
       { id: 'client-creative-approval', phase: 'Creative & LPs', name: 'Client final creative approval', daysPrior: 2, role: 'Client' },
       { id: 'qa-creative', phase: 'Creative & LPs', name: 'QA of creative and LPs', daysPrior: 3, role: 'AM', notes: 'Notify client of any issues with ads or copy' },
-      { id: 'fb-permalink', phase: 'Creative & LPs', name: 'Facebook permalink approvals', daysPrior: 1, role: 'TJA', notes: 'Pathlabs sends permalinks for final approval to run', requires: ['meta'] },
+      { id: 'fb-permalink', phase: 'Creative & LPs', name: 'Facebook permalink approvals', daysPrior: 2, role: 'TJA', notes: 'Pathlabs sends permalinks for final approval to run', requires: ['meta'] },
 
       // === TARGETING & STRATEGY ===
-      { id: 'geo-targeting', phase: 'Targeting & Strategy', name: 'Geo-targeting confirmed', daysPrior: 4, role: 'TJA' },
-      { id: 'dayparting', phase: 'Targeting & Strategy', name: 'Dayparting / ad scheduling approved', daysPrior: 4, role: 'TJA' },
+      { id: 'geo-targeting', phase: 'Targeting & Strategy', name: 'Geo-targeting confirmed', daysPrior: 5, role: 'TJA' },
+      { id: 'dayparting', phase: 'Targeting & Strategy', name: 'Dayparting / ad scheduling approved', daysPrior: 5, role: 'TJA' },
       { id: 'audience-targeting', phase: 'Targeting & Strategy', name: 'Audience targeting approved', daysPrior: 4, role: 'AM' },
-      { id: 'budget-allocation', phase: 'Targeting & Strategy', name: 'Budget allocation by channel approved', daysPrior: 4, role: 'TJA' },
-      { id: 'flighting', phase: 'Targeting & Strategy', name: 'Flighting schedule documented', daysPrior: 3, role: 'TJA' },
-      { id: 'bid-strategy', phase: 'Targeting & Strategy', name: 'Bid strategies confirmed', daysPrior: 3, role: 'TJA' },
+      { id: 'budget-allocation', phase: 'Targeting & Strategy', name: 'Budget allocation by channel approved', daysPrior: 5, role: 'TJA' },
+      { id: 'flighting', phase: 'Targeting & Strategy', name: 'Flighting schedule documented', daysPrior: 4, role: 'TJA' },
+      { id: 'bid-strategy', phase: 'Targeting & Strategy', name: 'Bid strategies confirmed', daysPrior: 4, role: 'TJA' },
 
       // === PAID SEARCH ===
       { id: 'keyword-loomis', phase: 'Paid Search', name: 'Keyword list sent to Loomis for approval', daysPrior: 7, role: 'AM', requires: ['googleSearch'] },
-      { id: 'negative-keywords', phase: 'Paid Search', name: 'Negative keyword list documented', daysPrior: 5, role: 'TJA', requires: ['googleSearch'] },
+      { id: 'negative-keywords', phase: 'Paid Search', name: 'Negative keyword list documented', daysPrior: 6, role: 'TJA', requires: ['googleSearch'] },
       { id: 'search-build', phase: 'Paid Search', name: 'Provide search build for approval', daysPrior: 5, role: 'AM', requires: ['googleSearch'] },
-      { id: 'ad-extensions', phase: 'Paid Search', name: 'Ad extensions / assets configured', daysPrior: 3, role: 'TJA', requires: ['googleSearch'], notes: 'Sitelinks, callouts, structured snippets' },
-      { id: 'brand-exclusions', phase: 'Paid Search', name: 'Brand / competitor exclusions documented', daysPrior: 3, role: 'TJA', requires: ['googleSearch'] },
+      { id: 'ad-extensions', phase: 'Paid Search', name: 'Ad extensions / assets configured', daysPrior: 4, role: 'TJA', requires: ['googleSearch'], notes: 'Sitelinks, callouts, structured snippets' },
+      { id: 'brand-exclusions', phase: 'Paid Search', name: 'Brand / competitor exclusions documented', daysPrior: 4, role: 'TJA', requires: ['googleSearch'] },
       { id: 'client-search-approval', phase: 'Paid Search', name: 'Client approves search build', daysPrior: 2, role: 'Client', requires: ['googleSearch'] },
 
       // === FACEBOOK / META ===
-      { id: 'fb-page-url', phase: 'Facebook / Meta', name: 'FB advertiser page URL confirmed', daysPrior: 5, role: 'TJA', notes: 'Confirm FB Page URL / IG linked', requires: ['meta'] },
+      { id: 'fb-page-url', phase: 'Facebook / Meta', name: 'FB advertiser page URL confirmed', daysPrior: 6, role: 'TJA', notes: 'Confirm FB Page URL / IG linked', requires: ['meta'] },
       { id: 'fb-access-request', phase: 'Facebook / Meta', name: 'FB advertiser access requested', daysPrior: 5, role: 'AM', notes: 'Pathlabs sends page request — preference is our own ad account in Pathlabs BM', requires: ['meta'] },
-      { id: 'fb-access-granted', phase: 'Facebook / Meta', name: 'FB advertiser access confirmed', daysPrior: 3, role: 'TJA', requires: ['meta'] },
-      { id: 'ig-linked', phase: 'Facebook / Meta', name: 'Instagram account linked to FB page', daysPrior: 3, role: 'TJA', requires: ['meta'] },
+      { id: 'fb-access-granted', phase: 'Facebook / Meta', name: 'FB advertiser access confirmed', daysPrior: 4, role: 'TJA', requires: ['meta'] },
+      { id: 'ig-linked', phase: 'Facebook / Meta', name: 'Instagram account linked to FB page', daysPrior: 4, role: 'TJA', requires: ['meta'] },
       { id: 'fb-objective', phase: 'Facebook / Meta', name: 'FB objective approval', daysPrior: 3, role: 'AM / Loomis', notes: 'Confirm share of budget by objective', requires: ['meta'] },
-      { id: 'fb-domain', phase: 'Facebook / Meta', name: 'FB domain verification', daysPrior: 3, role: 'TJA', requires: ['meta'] },
+      { id: 'fb-domain', phase: 'Facebook / Meta', name: 'FB domain verification', daysPrior: 4, role: 'TJA', requires: ['meta'] },
 
       // === CHANNEL-SPECIFIC ===
       { id: 'ctv-specs', phase: 'Channel-Specific', name: 'CTV creative specs (15s / 30s versions)', daysPrior: 7, role: 'SCA', requires: ['ctv'] },
       { id: 'ctv-deal-ids', phase: 'Channel-Specific', name: 'CTV deal IDs / PMPs confirmed', daysPrior: 5, role: 'SCA', requires: ['ctv'] },
       { id: 'foursquare-setup', phase: 'Channel-Specific', name: 'Foursquare / geofencing setup', daysPrior: 5, role: 'SCA', requiresAny: ['ctv', 'dooh'], notes: 'For foot traffic attribution' },
-      { id: 'dooh-reformatting', phase: 'Channel-Specific', name: 'DOOH asset reformatting to vendor specs', daysPrior: 5, role: 'TJA', requires: ['dooh'], notes: 'Per Pathlabs / MiQ vendor requirements' },
+      { id: 'dooh-reformatting', phase: 'Channel-Specific', name: 'DOOH asset reformatting to vendor specs', daysPrior: 6, role: 'TJA', requires: ['dooh'], notes: 'Per Pathlabs / MiQ vendor requirements' },
       { id: 'dooh-playback', phase: 'Channel-Specific', name: 'DOOH playback schedule approved', daysPrior: 3, role: 'SCA', requires: ['dooh'] },
       { id: 'prog-ad-server', phase: 'Channel-Specific', name: 'Programmatic creative ad server specs', daysPrior: 5, role: 'SCA', requires: ['programmatic'] },
       { id: 'dsp-segments', phase: 'Channel-Specific', name: 'DSP audience segments built', daysPrior: 4, role: 'SCA', requires: ['programmatic'] },
-      { id: 'tiktok-spark', phase: 'Channel-Specific', name: 'TikTok Spark Ads authorization', daysPrior: 4, role: 'TJA', requires: ['tiktok'], notes: 'For creator-authorized content' },
+      { id: 'tiktok-spark', phase: 'Channel-Specific', name: 'TikTok Spark Ads authorization', daysPrior: 5, role: 'TJA', requires: ['tiktok'], notes: 'For creator-authorized content' },
 
       // === PRE-LAUNCH QA ===
       { id: 'qa-meeting', phase: 'Pre-Launch QA', name: 'Pre-launch QA meeting held', daysPrior: 2, role: 'AM', notes: 'Walk through full campaign structure' },
-      { id: 'naming-validation', phase: 'Pre-Launch QA', name: 'Campaign naming conventions validated', daysPrior: 2, role: 'TJA' },
-      { id: 'budget-pacing-check', phase: 'Pre-Launch QA', name: 'Budget pacing & caps confirmed', daysPrior: 1, role: 'TJA' },
+      { id: 'naming-validation', phase: 'Pre-Launch QA', name: 'Campaign naming conventions validated', daysPrior: 3, role: 'TJA' },
+      { id: 'budget-pacing-check', phase: 'Pre-Launch QA', name: 'Budget pacing & caps confirmed', daysPrior: 2, role: 'TJA' },
       { id: 'final-go', phase: 'Pre-Launch QA', name: 'Final GO from client', daysPrior: 1, role: 'Client' },
     ];
 
@@ -190,6 +251,7 @@
       'First-Party Data',
       'Creative & LPs',
       'Internal Creative',
+      'Landing Page',
       'Targeting & Strategy',
       'Paid Search',
       'Facebook / Meta',
@@ -205,6 +267,7 @@
       'First-Party Data': { bar: 'bg-orange-400', tint: 'bg-orange-950/40', text: 'text-orange-300', printTint: 'print:bg-orange-50', printText: 'print:text-orange-900' },
       'Creative & LPs': { bar: 'bg-yellow-400', tint: 'bg-yellow-950/40', text: 'text-yellow-300', printTint: 'print:bg-yellow-50', printText: 'print:text-yellow-900' },
       'Internal Creative': { bar: 'bg-red-400', tint: 'bg-red-950/40', text: 'text-red-300', printTint: 'print:bg-red-50', printText: 'print:text-red-900' },
+      'Landing Page': { bar: 'bg-pink-400', tint: 'bg-pink-950/40', text: 'text-pink-300', printTint: 'print:bg-pink-50', printText: 'print:text-pink-900' },
       'Targeting & Strategy': { bar: 'bg-pink-400', tint: 'bg-pink-950/40', text: 'text-pink-300', printTint: 'print:bg-pink-50', printText: 'print:text-pink-900' },
       'Paid Search': { bar: 'bg-emerald-400', tint: 'bg-emerald-950/40', text: 'text-emerald-300', printTint: 'print:bg-emerald-50', printText: 'print:text-emerald-900' },
       'Facebook / Meta': { bar: 'bg-blue-400', tint: 'bg-blue-950/40', text: 'text-blue-300', printTint: 'print:bg-blue-50', printText: 'print:text-blue-900' },
@@ -214,7 +277,7 @@
       'Custom': { bar: 'bg-fuchsia-400', tint: 'bg-fuchsia-950/40', text: 'text-fuchsia-300', printTint: 'print:bg-fuchsia-50', printText: 'print:text-fuchsia-900' },
     };
 
-    const ROLE_OPTIONS = ['TJA', 'AM', 'SCA', 'Tracking', 'Loomis', 'AM / Loomis', 'Client', 'Internal Creative'];
+    const ROLE_OPTIONS = ['TJA', 'AM', 'SCA', 'Tracking', 'Loomis', 'AM / Loomis', 'Client', 'Internal Creative', 'Landing Page'];
 
     const ROLE_STYLES = {
       'TJA': 'bg-amber-400 text-stone-950 print:bg-stone-900 print:text-amber-100',
@@ -225,6 +288,7 @@
       'AM / Loomis': 'bg-red-500 text-stone-50 print:bg-red-800 print:text-red-50',
       'Client': 'bg-yellow-400 text-stone-950 print:bg-yellow-700 print:text-yellow-50',
       'Internal Creative': 'bg-purple-400 text-stone-950 print:bg-purple-800 print:text-purple-50',
+      'Landing Page': 'bg-pink-400 text-stone-950 print:bg-pink-800 print:text-pink-50',
     };
 
     // ============================================================
@@ -239,6 +303,7 @@
       'Paid Media': { label: 'Paid Media', color: '#F68E21', bg: '#7C3F0E' },
       'Pathlabs':   { label: 'Pathlabs',   color: '#0EA5A4', bg: '#0F4744' },
       'Client':     { label: 'Client',     color: '#A855F7', bg: '#5B21B6' },
+      'Reporting':  { label: 'Reporting',  color: '#EC4899', bg: '#831843' },
     };
     const ROLE_KEYS = Object.keys(ROLES);
     const DEFAULT_ROLE = 'Paid Media';
@@ -278,6 +343,28 @@
         if (!launch) return;
 
         const data = c.data || {};
+        const isToolkit = data.kind === 'toolkit';
+
+        // Toolkits have no blueprint/tasks. Just emit a launch marker
+        // so they show up as a flag on the calendar. They appear in
+        // the popover as "LAUNCH (Toolkit)" so users can tell them apart.
+        if (isToolkit) {
+          events.push({
+            campaignId: c.id,
+            campaignName: c.name || 'Untitled toolkit',
+            client: c.client || '',
+            taskId: `__launch__${c.id}`,
+            taskName: 'LAUNCH',
+            date: launch,
+            role: 'Paid Media',
+            completed: false,
+            isLaunchDate: true,
+            isCustom: false,
+            isToolkit: true,
+          });
+          return;
+        }
+
         const campaignType = data.campaignType || 'net-new';
         const preset = CAMPAIGN_TYPES[campaignType] || CAMPAIGN_TYPES['net-new'];
         const channels = data.channels || {};
@@ -288,6 +375,8 @@
         const customTasks = Array.isArray(data.customTasks) ? data.customTasks : [];
         const includeInternalCreative = !!data.includeInternalCreative;
         const internalStages = Array.isArray(data.internalStages) ? data.internalStages : [];
+        const includeLandingPage = !!data.includeLandingPage;
+        const landingPageStages = Array.isArray(data.landingPageStages) ? data.landingPageStages : [];
         const includeDashboard = data.includeDashboard !== false;
         const dashboardLeadDays = Math.max(0, Math.min(4, Number(data.dashboardLeadDays) || 2));
         const overrides = data.taskRoleOverrides || {};
@@ -352,6 +441,20 @@
           });
         }
 
+        // Landing page development stages
+        if (includeLandingPage) {
+          // LPs need to be live before tracking can be QA'd, which the master
+          // checklist places ~6 days before launch ('lp-mobile-qa'). So we
+          // anchor the LP runway with a 6-day buffer to launch.
+          let cumulative = 6;
+          [...landingPageStages].reverse().forEach((stage) => {
+            cumulative += Number(stage.days) || 0;
+            const id = `landingpage-${stage.id}`;
+            const date = subtract(launch, cumulative, businessDays);
+            pushEvent(id, stage.name, date, 'Landing Page', false);
+          });
+        }
+
         // Post-launch (dashboard / day-1 / week-1)
         if (includeDashboard && !(preset.excludedPhases || []).includes('Post-Launch')) {
           const post = [
@@ -377,6 +480,51 @@
           completed: false,
           isLaunchDate: true,
           isCustom: false,
+          isToolkit: false,
+        });
+      });
+      return events;
+    }
+
+    // Convert reporting items into the same event shape used by the campaign
+    // calendar so they render as colored dots / popover entries alongside
+    // campaign tasks. Each reporting item produces up to 3 events (one per
+    // milestone date). Reporting cycle month is preserved on the event so
+    // popovers can label them, e.g. "April Reporting → Pathlabs to TJA".
+    function buildReportingEvents(reportingItems) {
+      if (!Array.isArray(reportingItems)) return [];
+      const events = [];
+      const milestones = [
+        ['pathlabsDueToTJA', 'Pathlabs → TJA'],
+        ['internalProofing', 'Internal Proof'],
+        ['dueToClient', 'Due to Client'],
+      ];
+      reportingItems.forEach((item) => {
+        if (!item) return;
+        const cycleLabel = item.month ? fmtMonthLabel(item.month) : '';
+        milestones.forEach(([field, label]) => {
+          const iso = item[field];
+          if (!iso) return;
+          const d = parseDateSafe(iso);
+          if (!d || isNaN(d.getTime())) return;
+          // A milestone is considered done if the row is fully complete OR
+          // the milestone has its own check (e.g. Pathlabs report received).
+          const milestoneDone = !!item.complete
+            || (field === 'pathlabsDueToTJA' && !!item.pathlabsReceived);
+          events.push({
+            campaignId: `__reporting__${item.id}`,
+            campaignName: `${cycleLabel} Reporting`.trim() || 'Reporting',
+            client: item.client || '',
+            taskId: `${item.id}-${field}`,
+            taskName: `${item.client || 'Client'} · ${item.department || ''} — ${label}`,
+            date: d,
+            role: 'Reporting',
+            completed: milestoneDone,
+            isLaunchDate: false,
+            isCustom: false,
+            isReporting: true,
+            reportingMilestone: label,
+          });
         });
       });
       return events;
@@ -429,6 +577,14 @@
           { id: 'revisions', name: 'Revision rounds', days: 3 },
           { id: 'finalize', name: 'Final asset prep & handoff', days: 2 },
         ],
+        includeLandingPage: false,
+        landingPageStages: [
+          { id: 'lp-discovery', name: 'Discovery & wireframe', days: 3 },
+          { id: 'lp-design', name: 'Design mockup & client review', days: 4 },
+          { id: 'lp-build', name: 'Development & build', days: 5 },
+          { id: 'lp-qa', name: 'QA & client revisions', days: 2 },
+          { id: 'lp-launch', name: 'Final approval & publish', days: 1 },
+        ],
         includeDashboard: true,
         dashboardLeadDays: 2,
         customTasks: [],
@@ -464,6 +620,8 @@
         const customTasks = Array.isArray(data.customTasks) ? data.customTasks : [];
         const includeInternalCreative = !!data.includeInternalCreative;
         const internalStages = Array.isArray(data.internalStages) ? data.internalStages : [];
+        const includeLandingPage = !!data.includeLandingPage;
+        const landingPageStages = Array.isArray(data.landingPageStages) ? data.landingPageStages : [];
         const includeDashboard = data.includeDashboard !== false;
         const dashboardLeadDays = Number(data.dashboardLeadDays) || 2;
 
@@ -493,6 +651,18 @@
           });
         }
 
+        const landingPageTasks = [];
+        if (includeLandingPage) {
+          let cumulative = 6;
+          [...landingPageStages].reverse().forEach((stage) => {
+            cumulative += Number(stage.days) || 0;
+            landingPageTasks.unshift({
+              id: `landingpage-${stage.id}`, phase: 'Landing Page', name: stage.name,
+              daysPrior: cumulative, role: 'Landing Page', timing: 'pre',
+            });
+          });
+        }
+
         const postLaunch = [];
         if (includeDashboard && !preset.excludedPhases.includes('Post-Launch')) {
           const leadDays = Math.max(0, Math.min(4, dashboardLeadDays));
@@ -501,7 +671,7 @@
           postLaunch.push({ id: 'week-1-optimize', timing: 'post' });
         }
 
-        const all = [...filtered, ...custom, ...internalTasks, ...postLaunch];
+        const all = [...filtered, ...custom, ...internalTasks, ...landingPageTasks, ...postLaunch];
         const active = all.filter((t) => !skippedTasks[t.id]);
         const completed = active.filter((t) => completedTasks[t.id]).length;
         const total = active.length;
@@ -613,12 +783,22 @@
     // ============================================================
     // DASHBOARD
     // ============================================================
-    function Dashboard({ campaigns, loading, error, onOpen, onNew, onArchive, onUnarchive, onDuplicate, onDelete, onRefresh }) {
+    // The Dashboard supports two "kinds" of items, both stored in the
+    // same `campaigns` table with a `data.kind` discriminator:
+    //   - 'campaign' (default — full blueprint + toolkit)
+    //   - 'toolkit'  (standalone — just the creative-team Toolkit)
+    // The toggle lives in React state on Dashboard. Selection is also
+    // forwarded up via onKindChange so the parent can remember which
+    // tab a user came from when they open a detail view.
+    function Dashboard({ campaigns, reportingItems, setReportingItems, loading, error, kind, onKindChange, onOpen, onNew, onArchive, onUnarchive, onDuplicate, onDelete, onRefresh }) {
       const [statusFilter, setStatusFilter] = useState('active');
       const [clientFilter, setClientFilter] = useState('all');
       const [sortBy, setSortBy] = useState('launch');
       const [view, setView] = useState('list');
       const [confirmDelete, setConfirmDelete] = useState(null);
+
+      const isToolkitItem = (c) => !!(c && c.data && c.data.kind === 'toolkit');
+      const isCampaignItem = (c) => !isToolkitItem(c);
 
       const allClients = useMemo(() => {
         const set = new Set();
@@ -626,8 +806,17 @@
         return Array.from(set).sort();
       }, [campaigns]);
 
+      // Counts for the kind toggle pills (respect status filter so the
+      // numbers reflect what would actually be visible if that pill were
+      // clicked — minus the kind filter itself).
+      const campaignCount = useMemo(() => campaigns.filter(isCampaignItem).length, [campaigns]);
+      const toolkitCount  = useMemo(() => campaigns.filter(isToolkitItem).length,  [campaigns]);
+
       const filtered = useMemo(() => {
         let list = campaigns.filter((c) => {
+          // Kind filter (campaign vs toolkit)
+          if (kind === 'toolkit' && !isToolkitItem(c)) return false;
+          if (kind === 'campaign' && isToolkitItem(c)) return false;
           if (statusFilter === 'active' && c.status === 'archived') return false;
           if (statusFilter === 'archived' && c.status !== 'archived') return false;
           if (clientFilter !== 'all' && (c.client || '').trim() !== clientFilter) return false;
@@ -645,7 +834,10 @@
           list = list.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
         }
         return list;
-      }, [campaigns, statusFilter, clientFilter, sortBy]);
+      }, [campaigns, kind, statusFilter, clientFilter, sortBy]);
+
+      const newButtonLabel = kind === 'toolkit' ? 'New Toolkit' : 'New Campaign';
+      const emptyTitle     = kind === 'toolkit' ? 'No toolkits yet' : 'No campaigns yet';
 
       return (
         <div className="max-w-7xl mx-auto p-4 md:p-6">
@@ -669,14 +861,43 @@
                   <CalendarDays className="w-3.5 h-3.5" /> Calendar
                 </button>
               </div>
-              <button onClick={onNew} className="flex items-center gap-1.5 px-3 py-2 bg-amber-400 text-stone-950 rounded-sm text-xs font-bold uppercase tracking-wider hover:bg-amber-300 transition-colors">
-                <Plus className="w-4 h-4" /> New Campaign
-              </button>
+              {kind !== 'reporting' && (
+                <button onClick={() => onNew(kind)} className={`flex items-center gap-1.5 px-3 py-2 rounded-sm text-xs font-bold uppercase tracking-wider transition-colors ${kind === 'toolkit' ? 'bg-orange-500 text-stone-950 hover:bg-orange-400' : 'bg-amber-400 text-stone-950 hover:bg-amber-300'}`}>
+                  <Plus className="w-4 h-4" /> {newButtonLabel}
+                </button>
+              )}
             </div>
           </div>
 
-          {/* Filter strip */}
+          {/* Kind toggle (Campaigns / Toolkits / Reporting) */}
           {view === 'list' && (
+            <div className="mb-3 flex items-center gap-1 bg-stone-900 border border-stone-800 rounded-sm p-1 w-fit">
+              <button
+                onClick={() => onKindChange('campaign')}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-sm text-xs font-bold uppercase tracking-wider transition-colors ${kind === 'campaign' ? 'bg-amber-400 text-stone-950' : 'text-stone-400 hover:text-stone-200'}`}
+              >
+                Campaigns
+                <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-sm ${kind === 'campaign' ? 'bg-stone-950/20 text-stone-950' : 'bg-stone-800 text-stone-400'}`}>{campaignCount}</span>
+              </button>
+              <button
+                onClick={() => onKindChange('toolkit')}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-sm text-xs font-bold uppercase tracking-wider transition-colors ${kind === 'toolkit' ? 'bg-orange-500 text-stone-950' : 'text-stone-400 hover:text-stone-200'}`}
+              >
+                Toolkits
+                <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-sm ${kind === 'toolkit' ? 'bg-stone-950/20 text-stone-950' : 'bg-stone-800 text-stone-400'}`}>{toolkitCount}</span>
+              </button>
+              <button
+                onClick={() => onKindChange('reporting')}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-sm text-xs font-bold uppercase tracking-wider transition-colors ${kind === 'reporting' ? 'bg-pink-500 text-stone-950' : 'text-stone-400 hover:text-stone-200'}`}
+              >
+                Reporting
+                <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-sm ${kind === 'reporting' ? 'bg-stone-950/20 text-stone-950' : 'bg-stone-800 text-stone-400'}`}>{(reportingItems || []).length}</span>
+              </button>
+            </div>
+          )}
+
+          {/* Filter strip — campaigns/toolkits only; reporting has its own controls */}
+          {view === 'list' && kind !== 'reporting' && (
             <div className="flex items-center gap-2 flex-wrap mb-4 bg-stone-900 border border-stone-800 rounded-sm p-3">
               <div className="flex items-center gap-1.5">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-stone-500">Status:</span>
@@ -723,19 +944,23 @@
             <div className="flex items-center justify-center py-16 text-stone-400">
               <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading campaigns…
             </div>
+          ) : view === 'calendar' ? (
+            <CalendarView campaigns={campaigns.filter((c) => c.status !== 'archived')} reportingItems={reportingItems} onOpen={onOpen} />
+          ) : kind === 'reporting' ? (
+            <ReportingView items={reportingItems} setItems={setReportingItems} />
           ) : campaigns.length === 0 ? (
             <div className="bg-stone-900 rounded-sm border-2 border-dashed border-stone-700 p-16 text-center">
               <Zap className="w-12 h-12 text-orange-500 mx-auto mb-3" fill="currentColor" strokeWidth={0} />
-              <h3 className="text-amber-50 font-black uppercase tracking-wider mb-1">No campaigns yet</h3>
+              <h3 className="text-amber-50 font-black uppercase tracking-wider mb-1">{emptyTitle}</h3>
               <p className="text-sm text-stone-400 mb-4">Create your first one to get started.</p>
-              <button onClick={onNew} className="inline-flex items-center gap-1.5 px-3 py-2 bg-amber-400 text-stone-950 rounded-sm text-xs font-bold uppercase tracking-wider hover:bg-amber-300 transition-colors">
-                <Plus className="w-4 h-4" /> New Campaign
+              <button onClick={() => onNew(kind)} className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-sm text-xs font-bold uppercase tracking-wider transition-colors ${kind === 'toolkit' ? 'bg-orange-500 text-stone-950 hover:bg-orange-400' : 'bg-amber-400 text-stone-950 hover:bg-amber-300'}`}>
+                <Plus className="w-4 h-4" /> {newButtonLabel}
               </button>
             </div>
-          ) : view === 'list' ? (
+          ) : (
             filtered.length === 0 ? (
               <div className="bg-stone-900 rounded-sm border border-stone-800 p-8 text-center text-sm text-stone-400">
-                No campaigns match these filters.
+                {kind === 'toolkit' ? 'No toolkits match these filters.' : 'No campaigns match these filters.'}
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -751,8 +976,6 @@
                 ))}
               </div>
             )
-          ) : (
-            <CalendarView campaigns={campaigns.filter((c) => c.status !== 'archived')} onOpen={onOpen} />
           )}
 
           {/* Delete confirm */}
@@ -761,7 +984,7 @@
               <div className="bg-stone-900 border border-stone-700 rounded-sm max-w-sm w-full p-6 shadow-2xl">
                 <div className="flex items-center gap-2 mb-3">
                   <AlertTriangle className="w-5 h-5 text-red-400" />
-                  <h3 className="font-black text-amber-50 text-sm uppercase tracking-[0.2em]">Delete campaign?</h3>
+                  <h3 className="font-black text-amber-50 text-sm uppercase tracking-[0.2em]">Delete {isToolkitItem(confirmDelete) ? 'toolkit' : 'campaign'}?</h3>
                 </div>
                 <p className="text-xs text-stone-400 mb-4">
                   <span className="font-bold text-stone-200">{confirmDelete.name}</span> will be permanently deleted. This cannot be undone.
@@ -782,13 +1005,22 @@
 
     // ============================================================
     // CAMPAIGN CARD
+    // Renders both standard campaigns and standalone toolkits.
+    // For toolkits we hide the blueprint progress bar (toolkits don't
+    // have tasks) and show a "Toolkit" badge + a placement count instead.
     // ============================================================
     function CampaignCard({ campaign, onOpen, onDuplicate, onArchive, onDelete }) {
-      const progress = useMemo(() => calculateProgress(campaign), [campaign]);
+      const isToolkit = !!(campaign.data && campaign.data.kind === 'toolkit');
+      const progress = useMemo(() => isToolkit ? { completed: 0, total: 0, pct: 0 } : calculateProgress(campaign), [campaign, isToolkit]);
       const isArchived = campaign.status === 'archived';
       const launch = campaign.launch_date ? parseDateSafe(campaign.launch_date) : null;
       const today = startOfDay(new Date());
       const daysUntil = launch ? daysBetween(today, startOfDay(launch)) : null;
+      const placementCount = isToolkit
+        ? ((campaign.data && campaign.data.toolkit && Array.isArray(campaign.data.toolkit.placements))
+            ? campaign.data.toolkit.placements.length
+            : 0)
+        : 0;
 
       let dateColor = 'text-stone-300';
       let dateLabel = '';
@@ -806,10 +1038,17 @@
       };
 
       return (
-        <div onClick={handleCardClick} className={`bg-stone-900 border rounded-sm p-4 cursor-pointer transition-all hover:border-amber-400/40 hover:shadow-lg hover:shadow-amber-400/5 ${isArchived ? 'border-stone-800 opacity-60' : 'border-stone-800'}`}>
+        <div onClick={handleCardClick} className={`bg-stone-900 border rounded-sm p-4 cursor-pointer transition-all hover:shadow-lg ${isToolkit ? 'hover:border-orange-400/40 hover:shadow-orange-400/5' : 'hover:border-amber-400/40 hover:shadow-amber-400/5'} ${isArchived ? 'border-stone-800 opacity-60' : 'border-stone-800'}`}>
           <div className="flex items-start justify-between gap-2 mb-2">
             <div className="min-w-0 flex-1">
-              <div className="font-black text-amber-50 text-base truncate">{campaign.name || 'Untitled campaign'}</div>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <div className="font-black text-amber-50 text-base truncate">{campaign.name || (isToolkit ? 'Untitled toolkit' : 'Untitled campaign')}</div>
+                {isToolkit && (
+                  <span className="text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded-sm bg-orange-500/15 text-orange-300 border border-orange-500/40">
+                    Toolkit
+                  </span>
+                )}
+              </div>
               {campaign.client && <div className="text-xs text-stone-400 truncate">{campaign.client}</div>}
             </div>
             <span className={`text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded-sm flex-shrink-0 ${isArchived ? 'bg-stone-800 text-stone-400' : 'bg-emerald-950/50 text-emerald-300 border border-emerald-800/40'}`}>
@@ -829,15 +1068,38 @@
             )}
           </div>
 
-          <div className="mb-3">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-[10px] font-bold uppercase tracking-widest text-stone-500">Progress</span>
-              <span className="text-[10px] font-bold text-stone-300">{progress.pct}%{progress.total > 0 && ` (${progress.completed}/${progress.total})`}</span>
+          {isToolkit ? (
+            <div className="mb-3 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold uppercase tracking-widest text-stone-500">Placements</span>
+                <span className="text-xs font-bold text-orange-300">{placementCount} {placementCount === 1 ? 'placement' : 'placements'}</span>
+              </div>
+              {(() => {
+                const h = computeToolkitHandoff(campaign);
+                const tone = HANDOFF_TONES[h.tone];
+                return (
+                  <div className={`flex items-center justify-between gap-2 px-2 py-1 rounded-sm border ${tone.bg} ${tone.border}`}>
+                    <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-stone-500">
+                      <Clock className={`w-3 h-3 ${tone.text}`} /> To Paid Media
+                    </span>
+                    <span className={`text-[10px] font-bold ${tone.text}`}>
+                      {h.label}{h.handoff ? ` · ${fmtDateShort(h.handoff)}` : ''}
+                    </span>
+                  </div>
+                );
+              })()}
             </div>
-            <div className="h-1.5 bg-stone-800 rounded-sm overflow-hidden">
-              <div className="h-full bg-gradient-to-r from-orange-500 to-amber-400 transition-all" style={{ width: `${progress.pct}%` }}></div>
+          ) : (
+            <div className="mb-3">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] font-bold uppercase tracking-widest text-stone-500">Progress</span>
+                <span className="text-[10px] font-bold text-stone-300">{progress.pct}%{progress.total > 0 && ` (${progress.completed}/${progress.total})`}</span>
+              </div>
+              <div className="h-1.5 bg-stone-800 rounded-sm overflow-hidden">
+                <div className="h-full bg-gradient-to-r from-orange-500 to-amber-400 transition-all" style={{ width: `${progress.pct}%` }}></div>
+              </div>
             </div>
-          </div>
+          )}
 
           <div className="flex items-center gap-1 pt-2 border-t border-stone-800">
             <button onClick={onOpen} className="flex-1 px-2 py-1.5 bg-stone-800 hover:bg-stone-700 text-stone-200 rounded-sm text-[10px] font-bold uppercase tracking-wider transition-colors">Open</button>
@@ -862,7 +1124,7 @@
     // Filters live in React state (no localStorage) so they persist for
     // the session but reset between page loads.
     // ============================================================
-    function CalendarView({ campaigns, onOpen }) {
+    function CalendarView({ campaigns, reportingItems, onOpen }) {
       const [cursor, setCursor] = useState(() => {
         const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); return d;
       });
@@ -907,12 +1169,20 @@
       while (cells.length % 7 !== 0) cells.push(null);
 
       // Compute all events from all (active, launch_date set) campaigns once.
-      const allEvents = useMemo(() => buildCalendarEvents(campaigns), [campaigns]);
+      const allEvents = useMemo(() => {
+        return [
+          ...buildCalendarEvents(campaigns),
+          ...buildReportingEvents(reportingItems),
+        ];
+      }, [campaigns, reportingItems]);
 
       // Filter events by the user's filter state.
       const filteredEvents = useMemo(() => {
         return allEvents.filter((ev) => {
-          if (!activeCampaignIds[ev.campaignId]) return false;
+          // Reporting events aren't tied to a campaign id, so they bypass
+          // the per-campaign toggle. They still respect the role filter
+          // (toggle "Reporting" off in the role chip row to hide them).
+          if (!ev.isReporting && !activeCampaignIds[ev.campaignId]) return false;
           if (!ev.isLaunchDate) {
             if (!activeRoles[ev.role]) return false;
             if (hideCompleted && ev.completed) return false;
@@ -1011,15 +1281,43 @@
                     </div>
                     {campaigns.length === 0 ? (
                       <div className="px-3 py-3 text-xs text-stone-500 italic">No campaigns yet.</div>
-                    ) : campaigns.map((c) => (
-                      <label key={c.id} className="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-stone-800">
-                        <input type="checkbox" checked={!!activeCampaignIds[c.id]} onChange={() => toggleCampaign(c.id)} className="w-3.5 h-3.5 accent-amber-400" />
-                        <div className="min-w-0 flex-1">
-                          <div className="text-xs text-stone-100 truncate">{c.name || 'Untitled campaign'}</div>
-                          {c.client && <div className="text-[10px] text-stone-500 truncate">{c.client}</div>}
-                        </div>
-                      </label>
-                    ))}
+                    ) : (() => {
+                      const camps = campaigns.filter((c) => !(c.data && c.data.kind === 'toolkit'));
+                      const tks = campaigns.filter((c) => c.data && c.data.kind === 'toolkit');
+                      const sections = [];
+                      if (camps.length > 0) {
+                        sections.push(
+                          <div key="hdr-c" className="px-3 pt-1.5 pb-1 text-[9px] font-black uppercase tracking-[0.2em] text-amber-400 border-b border-stone-800/60">Campaigns</div>
+                        );
+                        camps.forEach((c) => sections.push(
+                          <label key={c.id} className="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-stone-800">
+                            <input type="checkbox" checked={!!activeCampaignIds[c.id]} onChange={() => toggleCampaign(c.id)} className="w-3.5 h-3.5 accent-amber-400" />
+                            <div className="min-w-0 flex-1">
+                              <div className="text-xs text-stone-100 truncate">{c.name || 'Untitled campaign'}</div>
+                              {c.client && <div className="text-[10px] text-stone-500 truncate">{c.client}</div>}
+                            </div>
+                          </label>
+                        ));
+                      }
+                      if (tks.length > 0) {
+                        sections.push(
+                          <div key="hdr-t" className="px-3 pt-1.5 pb-1 text-[9px] font-black uppercase tracking-[0.2em] text-orange-400 border-b border-stone-800/60 mt-1">Toolkits</div>
+                        );
+                        tks.forEach((c) => sections.push(
+                          <label key={c.id} className="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-stone-800">
+                            <input type="checkbox" checked={!!activeCampaignIds[c.id]} onChange={() => toggleCampaign(c.id)} className="w-3.5 h-3.5 accent-amber-400" />
+                            <div className="min-w-0 flex-1">
+                              <div className="text-xs text-stone-100 truncate flex items-center gap-1.5">
+                                {c.name || 'Untitled toolkit'}
+                                <span className="text-[8px] font-black uppercase tracking-widest text-orange-400 bg-orange-500/15 border border-orange-500/40 px-1 py-px rounded-sm">TK</span>
+                              </div>
+                              {c.client && <div className="text-[10px] text-stone-500 truncate">{c.client}</div>}
+                            </div>
+                          </label>
+                        ));
+                      }
+                      return sections;
+                    })()}
                   </div>
                 </>
               )}
@@ -1124,6 +1422,497 @@
       );
     }
 
+    // ============================================================
+    // REPORTING VIEW
+    // Monthly client reporting tracker — captures the workflow from
+    // "Pathlabs delivers data to TJA" through "Report due to client".
+    // Stored in localStorage (`tja_reporting_items`) so it works without
+    // extra DB schema. Each row is a Client × Department × Month combo.
+    // ============================================================
+    const REPORTING_DEPARTMENTS = [
+      'Paid Media - Dashboard',
+      'Paid Media - no dash',
+      'Paid Media One Sheeter',
+      'Paid Media - Wrap-Up',
+    ];
+    const REPORTING_STORAGE_KEY = 'tja_reporting_items_v1';
+
+    function loadReportingItems() {
+      try {
+        const raw = localStorage.getItem(REPORTING_STORAGE_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch { return []; }
+    }
+    function saveReportingItems(items) {
+      try { localStorage.setItem(REPORTING_STORAGE_KEY, JSON.stringify(items)); } catch {}
+    }
+    function blankReportingItem(month) {
+      return {
+        id: 'rpt-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
+        month: month || fmtMonthIso(new Date()),
+        client: '',
+        pod: '',
+        department: 'Paid Media - Dashboard',
+        startReporting: '',
+        pathlabsDueToTJA: '',
+        pathlabsReceived: false,
+        internalProofing: '',
+        datesConfirmedByCS: false,
+        routedInWMJ: false,
+        dueToClient: '',
+        complete: false,
+        notes: '',
+      };
+    }
+    function fmtMonthIso(d) {
+      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    }
+    function fmtMonthLabel(monthIso) {
+      if (!monthIso) return '';
+      const [y, m] = monthIso.split('-').map(Number);
+      const d = new Date(y, m - 1, 1);
+      return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    }
+    function shiftMonth(monthIso, delta) {
+      const [y, m] = monthIso.split('-').map(Number);
+      const d = new Date(y, m - 1 + delta, 1);
+      return fmtMonthIso(d);
+    }
+    function nearestUpcomingDeadline(item, today) {
+      const fields = [
+        ['pathlabsDueToTJA', 'Pathlabs → TJA'],
+        ['internalProofing', 'Internal Proof'],
+        ['dueToClient', 'Due to Client'],
+      ];
+      let best = null;
+      for (const [k, label] of fields) {
+        if (!item[k]) continue;
+        // Skip the Pathlabs milestone once the team has marked the report
+        // received — no point counting down to a deadline already met.
+        if (k === 'pathlabsDueToTJA' && item.pathlabsReceived) continue;
+        const d = parseDateSafe(item[k]);
+        if (!d) continue;
+        if (item.complete) continue;
+        if (!best || d < best.date) best = { date: d, key: k, label };
+      }
+      if (!best) return null;
+      const days = businessDaysBetween(today, startOfDay(best.date));
+      return { ...best, businessDaysLeft: days };
+    }
+
+    // Seed data extracted from the 2026 Monthly Reporting Docs PDF
+    // (specifically page 13's "Insights" cadence calendar, which gives the
+    // unambiguous Pathlabs delivery date per client per month). Internal
+    // proofing = Pathlabs + 3 business days. Due to client targets the
+    // 15th of the delivery month or Pathlabs + 5 biz days, whichever is later
+    // (per the "all reporting complete by the 15th" note on page 13).
+    const SEED_REPORTING_DATA = (() => {
+      // Reporting cycle month (the month being reported on) per column index
+      const reportingMonths = ['2025-12','2026-01','2026-02','2026-03','2026-04','2026-05',
+                               '2026-06','2026-07','2026-08','2026-09','2026-10','2026-11'];
+      // [client, pod, dept, [Dec25, Jan26, Feb26, ..., Nov26]]
+      // Each value is the 'M/D' that Pathlabs delivers insights for that report
+      const rows = [
+        ['276 - Mountain Shadows', 'Kyle / Trinity', 'Paid Media - Dashboard',
+          ['1/7','2/5','3/5','4/6','5/6','6/5','7/7','8/6','9/4','10/6','11/5','12/4']],
+        ['131 - Hotel Valley Ho', 'Kyle / Trinity', 'Paid Media - Dashboard',
+          ['1/7','2/5','3/5','4/6','5/6','6/5','7/7','8/6','9/4','10/6','11/5','12/4']],
+        ['500 - The Dream Wheel', 'Frankie / Claire', 'Paid Media - Dashboard',
+          ['1/9','2/9','3/9','4/8','5/8','6/9','7/9','8/10','9/9','10/8','11/9','12/8']],
+        ['511 - Skyviews Miami', 'Frankie / Claire', 'Paid Media - Dashboard',
+          ['1/9','2/9','3/9','4/8','5/8','6/9','7/9','8/10','9/9','10/8','11/9','12/8']],
+        ['484 - USAP Golden Ticket', 'Kyle / Alex', 'Paid Media - Dashboard',
+          ['1/9','2/11','3/9','4/8','5/8','6/9','7/9','','','','','']],
+        ['526 - JDM', 'Alysha / Trinity', 'Paid Media - Dashboard',
+          ['1/13','2/11','3/11','4/10','5/12','6/11','7/13','8/12','9/11','10/12','11/12','12/10']],
+        ['001 - TJA', 'Alysha / Trinity', 'Paid Media - Dashboard',
+          ['1/15','2/13','3/13','4/10','5/12','6/11','7/13','8/12','9/11','10/12','11/12','12/10']],
+        ['499 - RCS', 'Frankie / Claire', 'Paid Media - no dash',
+          ['','2/2','3/2','4/13','5/11','6/8','7/6','8/3','','','','']],
+        ['245 - STB', 'Frankie / Alex', 'Paid Media - no dash',
+          ['','2/10','3/9','4/20','','','','','','','','']],
+        ['541 - A New Leaf', 'Frankie / Kyle / Claire', 'Paid Media - Dashboard',
+          ['1/13','','','4/6','5/6','','','','','','','']],
+        ['540 - JoJo Coffeehouse', 'Kyle / Alex', 'Paid Media - Dashboard',
+          ['','2/9','3/11','','','','','','','','','']],
+      ];
+      const today = startOfDay(new Date());
+      const items = [];
+      rows.forEach(([client, pod, dept, dates]) => {
+        dates.forEach((md, idx) => {
+          if (!md || md === 'TBD' || md === 'N/A') return;
+          const reportingMonth = reportingMonths[idx];
+          const [m, d] = md.split('/').map(Number);
+          if (!m || !d) return;
+          const [ry, rm] = reportingMonth.split('-').map(Number);
+          // Pathlabs delivery is in the calendar month AFTER reportingMonth
+          let yy = ry;
+          if (m <= rm) yy = ry + 1;
+          const pathlabsIso = `${yy}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+          const pathlabsDate = parseDateSafe(pathlabsIso);
+          const proofIso = pathlabsDate ? fmtDateIso(addBusinessDays(pathlabsDate, 3)) : '';
+          // Due to client: max(15th of delivery month, pathlabs + 5 biz days)
+          const target15 = parseDateSafe(`${yy}-${String(m).padStart(2,'0')}-15`);
+          const plus5 = pathlabsDate ? addBusinessDays(pathlabsDate, 5) : null;
+          const dueClientDate = (plus5 && target15 && plus5 > target15) ? plus5 : target15;
+          const dueClientIso = dueClientDate ? fmtDateIso(dueClientDate) : '';
+          const isPast = dueClientDate && dueClientDate < today;
+          items.push({
+            month: reportingMonth, client, pod, department: dept,
+            startReporting: '',
+            pathlabsDueToTJA: pathlabsIso,
+            pathlabsReceived: !!isPast,
+            internalProofing: proofIso,
+            datesConfirmedByCS: !!isPast,
+            routedInWMJ: !!isPast,
+            dueToClient: dueClientIso,
+            complete: !!isPast,
+            notes: 'Imported from 2026 Monthly Reporting Docs',
+          });
+        });
+      });
+
+      // USAP Golden Ticket runs event-specific wrap-up reports alongside the
+      // monthly dashboard. Each row below uses the concrete dates pulled from
+      // the per-month pages of the reporting plan (not the page-13 cadence).
+      // Format: [reportingMonth, pod, label, pathlabsMD, proofMD, dueClientMD]
+      const USAP_WRAPUPS = [
+        ['2026-01', 'Sabrina / Alex', 'Wrap-Up Exec',           '2/11', '2/16', '2/18'],
+        ['2026-01', 'Sabrina / Alex', 'Board Exec Summary',     '2/11', '2/19', '2/20'],
+        ['2026-02', 'Sabrina / Alex', 'Wrap-Up Opelika',        '3/10', '3/13', '3/17'],
+        ['2026-02', 'Sabrina / Alex', 'Mid-Campaign Analysis',  '3/11', '3/16', '3/20'],
+        ['2026-02', 'Sabrina / Alex', 'Wrap-Up Boise',          '3/20', '3/26', '3/31'],
+        ['2026-03', 'Sab / Alex',     'SD Wrap-Up (2 Bd + MarComm)', '4/20', '4/23', '4/28'],
+        ['2026-05', 'Kyle / Alex',    'All-Campaign Wrap Up',   '6/17', '6/23', '6/25'],
+        ['2026-11', 'Kyle / Alex',    'Glendale Recap',         '1/14', '1/16', '1/20'],
+      ];
+      USAP_WRAPUPS.forEach(([reportingMonth, pod, label, plMD, proofMD, dueMD]) => {
+        const [ry, rm] = reportingMonth.split('-').map(Number);
+        const expand = (md) => {
+          if (!md) return '';
+          const [m, d] = md.split('/').map(Number);
+          if (!m || !d) return '';
+          let yy = ry;
+          if (m <= rm) yy = ry + 1;
+          return `${yy}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        };
+        const pathlabsIso = expand(plMD);
+        const proofIso = expand(proofMD);
+        const dueClientIso = expand(dueMD);
+        const dueClientDate = parseDateSafe(dueClientIso);
+        const isPast = dueClientDate && dueClientDate < today;
+        items.push({
+          month: reportingMonth,
+          client: '484 - USAP Golden Ticket',
+          pod,
+          department: 'Paid Media - Wrap-Up',
+          startReporting: '',
+          pathlabsDueToTJA: pathlabsIso,
+          pathlabsReceived: !!isPast,
+          internalProofing: proofIso,
+          datesConfirmedByCS: !!isPast,
+          routedInWMJ: !!isPast,
+          dueToClient: dueClientIso,
+          complete: !!isPast,
+          notes: `${label} — wrap-up report (imported from 2026 reporting plan)`,
+        });
+      });
+
+      return items;
+    })();
+
+    function ReportingView({ items, setItems }) {
+      // Default to the most recent reporting cycle (last completed month) on
+      // open, since that's typically the cycle being delivered right now.
+      const [activeMonth, setActiveMonth] = useState(() => shiftMonth(fmtMonthIso(new Date()), -1));
+      const [search, setSearch] = useState('');
+      const [showCompleted, setShowCompleted] = useState(true);
+
+      const today = startOfDay(new Date());
+
+      const filtered = useMemo(() => {
+        const q = search.trim().toLowerCase();
+        return items.filter((i) => {
+          if (i.month !== activeMonth) return false;
+          if (!showCompleted && i.complete) return false;
+          if (q) {
+            const hay = [i.client, i.pod, i.department, i.notes].join(' ').toLowerCase();
+            if (!hay.includes(q)) return false;
+          }
+          return true;
+        });
+      }, [items, activeMonth, search, showCompleted]);
+
+      const stats = useMemo(() => {
+        const total = filtered.length;
+        const complete = filtered.filter((i) => i.complete).length;
+        let overdue = 0, upcoming = 0;
+        filtered.forEach((i) => {
+          const n = nearestUpcomingDeadline(i, today);
+          if (!n) return;
+          if (n.businessDaysLeft < 0) overdue++;
+          else if (n.businessDaysLeft <= 5) upcoming++;
+        });
+        return { total, complete, overdue, upcoming };
+      }, [filtered, today]);
+
+      const updateItem = (id, patch) => {
+        setItems((prev) => prev.map((i) => (i.id === id ? { ...i, ...patch } : i)));
+      };
+      const removeItem = (id) => {
+        setItems((prev) => prev.filter((i) => i.id !== id));
+      };
+      const addItem = () => {
+        setItems((prev) => [...prev, blankReportingItem(activeMonth)]);
+      };
+      const duplicateForNextMonth = () => {
+        const nextMonth = shiftMonth(activeMonth, 1);
+        const cloned = filtered.map((i) => ({
+          ...i,
+          id: 'rpt-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
+          month: nextMonth,
+          startReporting: '',
+          pathlabsDueToTJA: '',
+          internalProofing: '',
+          dueToClient: '',
+          datesConfirmedByCS: false,
+          routedInWMJ: false,
+          complete: false,
+        }));
+        setItems((prev) => [...prev, ...cloned]);
+        setActiveMonth(nextMonth);
+      };
+
+      // The reporting cycle is named after the data being reported on
+      // (e.g. "April Reporting"), but the Pathlabs handoffs, internal
+      // proofing and client delivery dates all land in the FOLLOWING
+      // calendar month. Surface that explicitly so it's not confusing.
+      const deliveryMonth = shiftMonth(activeMonth, 1);
+      const earliestDate = useMemo(() => {
+        let earliest = null;
+        filtered.forEach((i) => {
+          [i.pathlabsDueToTJA, i.internalProofing, i.dueToClient].forEach((iso) => {
+            if (!iso) return;
+            const d = parseDateSafe(iso);
+            if (!d) return;
+            if (!earliest || d < earliest) earliest = d;
+          });
+        });
+        return earliest;
+      }, [filtered]);
+      const latestDate = useMemo(() => {
+        let latest = null;
+        filtered.forEach((i) => {
+          [i.pathlabsDueToTJA, i.internalProofing, i.dueToClient].forEach((iso) => {
+            if (!iso) return;
+            const d = parseDateSafe(iso);
+            if (!d) return;
+            if (!latest || d > latest) latest = d;
+          });
+        });
+        return latest;
+      }, [filtered]);
+
+      return (
+        <div className="space-y-4">
+          {/* Header */}
+          <div className="bg-stone-900 border border-stone-800 rounded-sm p-4">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <div className="text-[10px] uppercase tracking-[0.3em] font-bold text-amber-400 mb-1">Paid Media Reporting</div>
+                <h2 className="text-xl font-black text-amber-50">{fmtMonthLabel(activeMonth)} Paid Media Reporting</h2>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1 bg-stone-950 border border-stone-800 rounded-sm">
+                  <button onClick={() => setActiveMonth(shiftMonth(activeMonth, -1))} className="p-1.5 text-stone-300 hover:text-amber-400">
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                  <input
+                    type="month"
+                    value={activeMonth}
+                    onChange={(e) => setActiveMonth(e.target.value)}
+                    className="bg-transparent text-amber-50 text-xs font-bold px-1 py-1 focus:outline-none"
+                  />
+                  <button onClick={() => setActiveMonth(shiftMonth(activeMonth, 1))} className="p-1.5 text-stone-300 hover:text-amber-400">
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+                <button onClick={() => setActiveMonth(fmtMonthIso(new Date()))} className="px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-stone-800 hover:bg-stone-700 text-stone-300 rounded-sm">
+                  Today
+                </button>
+                <button onClick={duplicateForNextMonth} disabled={filtered.length === 0} className="flex items-center gap-1 px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-stone-800 hover:bg-orange-500 hover:text-stone-950 text-stone-300 rounded-sm disabled:opacity-40 disabled:cursor-not-allowed" title="Copy this month's items into next month with dates cleared">
+                  <Copy className="w-3 h-3" /> Roll to next month
+                </button>
+                <button
+                  onClick={() => {
+                    const msg = items.length > 0
+                      ? `Import ${SEED_REPORTING_DATA.length} pre-filled rows from the 2026 Monthly Reporting Docs PDF? They'll be added alongside your existing rows.`
+                      : `Import ${SEED_REPORTING_DATA.length} pre-filled rows from the 2026 Monthly Reporting Docs PDF?`;
+                    if (!confirm(msg)) return;
+                    const seeded = SEED_REPORTING_DATA.map((s) => ({
+                      ...s,
+                      id: 'rpt-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
+                    }));
+                    setItems((prev) => [...prev, ...seeded]);
+                  }}
+                  className="flex items-center gap-1 px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-stone-800 hover:bg-amber-400 hover:text-stone-950 text-stone-300 rounded-sm"
+                  title="Pre-fill with the cadence from your 2026 Monthly Reporting Docs PDF"
+                >
+                  <Download className="w-3 h-3" /> Import PDF Plan
+                </button>
+                <button onClick={() => addItem()} className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-400 text-stone-950 rounded-sm text-xs font-bold uppercase tracking-wider hover:bg-amber-300">
+                  <Plus className="w-3.5 h-3.5" /> Add Item
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Cycle vs delivery banner — clarifies that April reporting deadlines land in May, etc. */}
+          <div className="bg-pink-950/30 border border-pink-800/40 rounded-sm p-3 flex items-start gap-3 flex-wrap">
+            <CalendarDays className="w-4 h-4 text-pink-300 flex-shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-[200px]">
+              <div className="text-[10px] font-black uppercase tracking-[0.25em] text-pink-300 mb-0.5">
+                {fmtMonthLabel(activeMonth)} reporting cycle
+              </div>
+              <div className="text-xs text-stone-300">
+                Deliverables land in <span className="font-bold text-pink-200">{fmtMonthLabel(deliveryMonth)}</span>
+                {earliestDate && latestDate && (
+                  <> &mdash; deadlines run <span className="text-stone-100 font-bold">{fmtDateShort(earliestDate)} → {fmtDateShort(latestDate)}</span></>
+                )}.
+              </div>
+              <div className="text-[11px] text-stone-400 mt-1">
+                All reporting deadlines now appear on the main <span className="text-pink-300 font-bold">Calendar</span> tab alongside campaign tasks. Toggle the <span className="text-pink-300 font-bold">Reporting</span> role chip there to show or hide them.
+              </div>
+            </div>
+          </div>
+
+          {/* Stats — now spanning full width since the mini calendar is gone */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="bg-stone-900 border border-stone-800 rounded-sm p-3">
+              <div className="text-[10px] uppercase tracking-widest text-stone-500 font-bold">Total</div>
+              <div className="text-2xl font-black text-amber-50">{stats.total}</div>
+            </div>
+            <div className="bg-stone-900 border border-emerald-800/40 rounded-sm p-3">
+              <div className="text-[10px] uppercase tracking-widest text-emerald-400 font-bold">Complete</div>
+              <div className="text-2xl font-black text-emerald-300">{stats.complete}</div>
+            </div>
+            <div className="bg-stone-900 border border-orange-800/40 rounded-sm p-3">
+              <div className="text-[10px] uppercase tracking-widest text-orange-400 font-bold">Upcoming ≤5d</div>
+              <div className="text-2xl font-black text-orange-300">{stats.upcoming}</div>
+            </div>
+            <div className="bg-stone-900 border border-red-800/40 rounded-sm p-3">
+              <div className="text-[10px] uppercase tracking-widest text-red-400 font-bold">Overdue</div>
+              <div className="text-2xl font-black text-red-300">{stats.overdue}</div>
+            </div>
+          </div>
+
+          {/* Filter bar */}
+          <div className="bg-stone-900 border border-stone-800 rounded-sm p-3 flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+              <Search className="w-3.5 h-3.5 text-stone-500" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search client, pod, department…"
+                className="flex-1 bg-transparent text-xs text-stone-200 placeholder:text-stone-500 focus:outline-none"
+              />
+            </div>
+            <label className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-stone-400 cursor-pointer">
+              <input type="checkbox" checked={showCompleted} onChange={(e) => setShowCompleted(e.target.checked)} className="accent-amber-400" />
+              Show completed
+            </label>
+          </div>
+
+          {/* Single flat paid-media reporting table */}
+          {filtered.length === 0 ? (
+            <div className="bg-stone-900 border-2 border-dashed border-stone-700 rounded-sm p-12 text-center">
+              <Filter className="w-10 h-10 text-stone-600 mx-auto mb-3" />
+              <h3 className="text-amber-50 font-black uppercase tracking-wider mb-1">No reporting items for {fmtMonthLabel(activeMonth)}</h3>
+              <p className="text-sm text-stone-400 mb-4">Add the first one to start tracking deadlines.</p>
+              <button onClick={() => addItem()} className="inline-flex items-center gap-1.5 px-3 py-2 bg-amber-400 text-stone-950 rounded-sm text-xs font-bold uppercase tracking-wider hover:bg-amber-300">
+                <Plus className="w-4 h-4" /> Add Reporting Item
+              </button>
+            </div>
+          ) : (
+            <div className="bg-stone-900 border border-stone-800 rounded-sm overflow-hidden">
+              <div className="px-4 py-2 bg-stone-800/60 border-b border-stone-800 flex items-center justify-between">
+                <h3 className="text-sm font-black uppercase tracking-[0.15em] text-amber-50">Paid Media Reports · {filtered.length}</h3>
+                <button onClick={() => addItem()} className="flex items-center gap-1 px-2 py-1 bg-stone-800 hover:bg-amber-400 hover:text-stone-950 text-stone-300 rounded-sm text-[10px] font-bold uppercase tracking-wider">
+                  <Plus className="w-3 h-3" /> Add row
+                </button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-stone-950/60 text-stone-500">
+                    <tr>
+                      <th className="text-left px-2 py-2 font-bold uppercase tracking-widest text-[9px]">Client</th>
+                      <th className="text-left px-2 py-2 font-bold uppercase tracking-widest text-[9px]">Pod</th>
+                      <th className="text-left px-2 py-2 font-bold uppercase tracking-widest text-[9px]">Type</th>
+                      <th className="text-left px-2 py-2 font-bold uppercase tracking-widest text-[9px]">Pathlabs → TJA</th>
+                      <th className="text-center px-2 py-2 font-bold uppercase tracking-widest text-[9px]" title="PL Report received">PL Recv'd</th>
+                      <th className="text-left px-2 py-2 font-bold uppercase tracking-widest text-[9px]">Internal Proof</th>
+                      <th className="text-center px-2 py-2 font-bold uppercase tracking-widest text-[9px]">CS ✓</th>
+                      <th className="text-center px-2 py-2 font-bold uppercase tracking-widest text-[9px]">WMJ</th>
+                      <th className="text-left px-2 py-2 font-bold uppercase tracking-widest text-[9px]">Due to Client</th>
+                      <th className="text-center px-2 py-2 font-bold uppercase tracking-widest text-[9px]">Done</th>
+                      <th className="text-left px-2 py-2 font-bold uppercase tracking-widest text-[9px]">Countdown</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map((i) => {
+                      const n = nearestUpcomingDeadline(i, today);
+                      let cdLabel = '—', cdClass = 'text-stone-500';
+                      if (i.complete) { cdLabel = 'Complete'; cdClass = 'text-emerald-400'; }
+                      else if (n) {
+                        if (n.businessDaysLeft < 0) { cdLabel = `Overdue ${Math.abs(n.businessDaysLeft)}d · ${n.label}`; cdClass = 'text-red-400 font-bold'; }
+                        else if (n.businessDaysLeft === 0) { cdLabel = `${n.label} TODAY`; cdClass = 'text-red-400 font-bold'; }
+                        else if (n.businessDaysLeft <= 5) { cdLabel = `${n.businessDaysLeft}d → ${n.label}`; cdClass = 'text-orange-300 font-bold'; }
+                        else { cdLabel = `${n.businessDaysLeft}d → ${n.label}`; cdClass = 'text-stone-300'; }
+                      }
+                      const inputCls = 'w-full bg-transparent border-none text-stone-200 px-1 py-1 text-xs focus:outline-none focus:bg-stone-800 rounded-sm';
+                      const dateCls = 'bg-transparent border-none text-stone-200 px-1 py-1 text-xs focus:outline-none focus:bg-stone-800 rounded-sm';
+                      return (
+                        <tr key={i.id} className={`border-t border-stone-800 hover:bg-stone-800/40 ${i.complete ? 'opacity-60' : ''}`}>
+                          <td className="px-1 py-1"><input type="text" value={i.client} onChange={(e) => updateItem(i.id, { client: e.target.value })} placeholder="Client name" className={inputCls} /></td>
+                          <td className="px-1 py-1"><input type="text" value={i.pod} onChange={(e) => updateItem(i.id, { pod: e.target.value })} placeholder="e.g. Alysha / Trinity" className={inputCls} /></td>
+                          <td className="px-1 py-1">
+                            <select value={i.department} onChange={(e) => updateItem(i.id, { department: e.target.value })} className={inputCls}>
+                              {REPORTING_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
+                            </select>
+                          </td>
+                          <td className="px-1 py-1"><input type="date" value={i.pathlabsDueToTJA} onChange={(e) => updateItem(i.id, { pathlabsDueToTJA: e.target.value })} className={dateCls} /></td>
+                          <td className="text-center px-1 py-1"><input type="checkbox" checked={!!i.pathlabsReceived} onChange={(e) => updateItem(i.id, { pathlabsReceived: e.target.checked })} className="accent-pink-400" title="Mark Pathlabs report received" /></td>
+                          <td className="px-1 py-1"><input type="date" value={i.internalProofing} onChange={(e) => updateItem(i.id, { internalProofing: e.target.value })} className={dateCls} /></td>
+                          <td className="text-center px-1 py-1"><input type="checkbox" checked={i.datesConfirmedByCS} onChange={(e) => updateItem(i.id, { datesConfirmedByCS: e.target.checked })} className="accent-amber-400" /></td>
+                          <td className="text-center px-1 py-1"><input type="checkbox" checked={i.routedInWMJ} onChange={(e) => updateItem(i.id, { routedInWMJ: e.target.checked })} className="accent-amber-400" /></td>
+                          <td className="px-1 py-1"><input type="date" value={i.dueToClient} onChange={(e) => updateItem(i.id, { dueToClient: e.target.value })} className={dateCls} /></td>
+                          <td className="text-center px-1 py-1"><input type="checkbox" checked={i.complete} onChange={(e) => updateItem(i.id, { complete: e.target.checked })} className="accent-emerald-400" /></td>
+                          <td className={`px-2 py-1 text-[11px] ${cdClass}`}>{cdLabel}</td>
+                          <td className="px-1 py-1">
+                            <button onClick={() => removeItem(i.id)} className="p-1 text-stone-500 hover:text-red-400" title="Delete row">
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <div className="text-[10px] text-stone-500 italic px-1">
+            Reporting data is saved locally to this browser. Use "Roll to next month" to copy the current month's items forward with cleared dates.
+          </div>
+        </div>
+      );
+    }
+
     function CalendarDayPopover({ date, events, anchorRect, onClose, onOpenCampaign }) {
       // Position: try to place near the anchor, but keep within viewport.
       const popRef = useRef(null);
@@ -1181,7 +1970,7 @@
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className={`text-sm font-semibold ${ev.completed ? 'line-through text-stone-500' : 'text-stone-100'}`}>
-                        {launch ? 'LAUNCH' : ev.taskName}
+                        {launch ? (ev.isToolkit ? 'LAUNCH (Toolkit)' : 'LAUNCH') : ev.taskName}
                       </span>
                       {ev.completed && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />}
                     </div>
@@ -1336,6 +2125,134 @@
     }
 
     // ============================================================
+    // NEW TOOLKIT MODAL
+    // Lighter modal for creating a standalone Toolkit (ad-refresh
+    // workflow that doesn't need a full blueprint). Inserts a row
+    // with data: { kind: 'toolkit', toolkit: { placements: [] } }.
+    // ============================================================
+    function NewToolkitModal({ onClose, onCreate, existingClients, campaigns }) {
+      const [name, setName] = useState('');
+      const [client, setClient] = useState('');
+      const [launchDate, setLaunchDate] = useState('');
+      const [duplicateFromId, setDuplicateFromId] = useState('');
+      const [creating, setCreating] = useState(false);
+      const [error, setError] = useState('');
+      const [showClientSuggest, setShowClientSuggest] = useState(false);
+
+      const existingToolkits = useMemo(
+        () => campaigns.filter((c) => c.data && c.data.kind === 'toolkit'),
+        [campaigns]
+      );
+
+      const filteredSuggestions = useMemo(() => {
+        if (!client) return existingClients.slice(0, 5);
+        const q = client.toLowerCase();
+        return existingClients.filter((c) => c.toLowerCase().includes(q) && c.toLowerCase() !== q).slice(0, 5);
+      }, [client, existingClients]);
+
+      const handleSubmit = async (e) => {
+        e.preventDefault();
+        setError('');
+        if (!name.trim()) {
+          setError('Name is required.');
+          return;
+        }
+        setCreating(true);
+        try {
+          let placements = [];
+          if (duplicateFromId) {
+            const src = campaigns.find((c) => c.id === duplicateFromId);
+            if (src && src.data && src.data.toolkit && Array.isArray(src.data.toolkit.placements)) {
+              // Deep clone, then re-id every placement so we don't collide with the source.
+              placements = JSON.parse(JSON.stringify(src.data.toolkit.placements)).map((p) => ({
+                ...p,
+                id: newPlacementId(),
+              }));
+            }
+          }
+          await onCreate({
+            name: name.trim(),
+            client: client.trim() || null,
+            launch_date: launchDate || null,
+            data: { kind: 'toolkit', toolkit: { placements } },
+          });
+        } catch (err) {
+          setError(err.message || 'Failed to create toolkit.');
+        } finally {
+          setCreating(false);
+        }
+      };
+
+      return (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-stone-900 border border-stone-700 rounded-sm max-w-md w-full p-6 shadow-2xl">
+            <div className="flex items-center gap-2 mb-1">
+              <Plus className="w-4 h-4 text-orange-400" />
+              <h3 className="font-black text-amber-50 text-sm uppercase tracking-[0.2em]">New Toolkit</h3>
+            </div>
+            <p className="text-[11px] text-stone-500 mb-4 italic">Standalone Creative Toolkit — no blueprint, no channels. Just placements.</p>
+            <form onSubmit={handleSubmit} className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-stone-400 mb-1">Name *</label>
+                <input type="text" required value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Q2 Ad Refresh" className="w-full px-3 py-2 bg-stone-800 border border-stone-700 rounded-sm text-sm text-stone-100 placeholder:text-stone-500 focus:outline-none focus:ring-2 focus:ring-orange-400" autoFocus />
+              </div>
+              <div className="relative">
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-stone-400 mb-1">Client</label>
+                <input
+                  type="text"
+                  value={client}
+                  onChange={(e) => { setClient(e.target.value); setShowClientSuggest(true); }}
+                  onFocus={() => setShowClientSuggest(true)}
+                  onBlur={() => setTimeout(() => setShowClientSuggest(false), 150)}
+                  placeholder="e.g. USA Pickleball"
+                  className="w-full px-3 py-2 bg-stone-800 border border-stone-700 rounded-sm text-sm text-stone-100 placeholder:text-stone-500 focus:outline-none focus:ring-2 focus:ring-orange-400"
+                />
+                {showClientSuggest && filteredSuggestions.length > 0 && (
+                  <div className="absolute top-full left-0 right-0 mt-1 bg-stone-800 border border-stone-700 rounded-sm shadow-lg z-10 max-h-40 overflow-y-auto">
+                    {filteredSuggestions.map((s) => (
+                      <button key={s} type="button" onMouseDown={() => { setClient(s); setShowClientSuggest(false); }} className="w-full text-left px-3 py-1.5 text-sm text-stone-200 hover:bg-stone-700">
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-stone-400 mb-1">Launch date <span className="text-stone-600 normal-case font-normal">(optional)</span></label>
+                <input type="date" value={launchDate} onChange={(e) => setLaunchDate(e.target.value)} className="w-full px-3 py-2 bg-stone-800 border border-stone-700 rounded-sm text-sm text-stone-100 focus:outline-none focus:ring-2 focus:ring-orange-400 [color-scheme:dark]" />
+                <p className="text-[11px] text-stone-500 mt-1 italic">Leave blank if the date is still TBD.</p>
+              </div>
+              {existingToolkits.length > 0 && (
+                <div>
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-stone-400 mb-1">Duplicate from existing toolkit (optional)</label>
+                  <select value={duplicateFromId} onChange={(e) => setDuplicateFromId(e.target.value)} className="w-full px-3 py-2 bg-stone-800 border border-stone-700 rounded-sm text-sm text-stone-100 focus:outline-none focus:ring-2 focus:ring-orange-400">
+                    <option value="">Start fresh</option>
+                    {existingToolkits.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}{c.client ? ` — ${c.client}` : ''}</option>
+                    ))}
+                  </select>
+                  <p className="text-[11px] text-stone-500 mt-1 italic">Copies all placements as a starting point.</p>
+                </div>
+              )}
+              {error && (
+                <div className="flex items-start gap-2 p-2.5 bg-red-950/40 border border-red-800/50 rounded-sm text-xs text-red-300">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <span>{error}</span>
+                </div>
+              )}
+              <div className="flex gap-2 pt-2">
+                <button type="submit" disabled={creating} className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-orange-500 text-stone-950 rounded-sm text-xs font-bold uppercase tracking-wider hover:bg-orange-400 disabled:opacity-50">
+                  {creating ? <><Loader2 className="w-4 h-4 animate-spin" /> Creating…</> : 'Create Toolkit'}
+                </button>
+                <button type="button" onClick={onClose} className="px-3 py-2 bg-stone-800 text-stone-200 rounded-sm text-xs font-bold uppercase tracking-wider hover:bg-stone-700">Cancel</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      );
+    }
+
+    // ============================================================
     // CAMPAIGN LAUNCH BLUEPRINT (full original component, adapted)
     // Accepts: campaign (id, name, client, launch_date, data)
     //          onBack (() => void)
@@ -1366,6 +2283,14 @@
         { id: 'revisions', name: 'Revision rounds', days: 3 },
         { id: 'finalize', name: 'Final asset prep & handoff', days: 2 },
       ]);
+      const [includeLandingPage, setIncludeLandingPage] = useState(!!initial.includeLandingPage);
+      const [landingPageStages, setLandingPageStages] = useState(Array.isArray(initial.landingPageStages) && initial.landingPageStages.length > 0 ? initial.landingPageStages : [
+        { id: 'lp-discovery', name: 'Discovery & wireframe', days: 3 },
+        { id: 'lp-design', name: 'Design mockup & client review', days: 4 },
+        { id: 'lp-build', name: 'Development & build', days: 5 },
+        { id: 'lp-qa', name: 'QA & client revisions', days: 2 },
+        { id: 'lp-launch', name: 'Final approval & publish', days: 1 },
+      ]);
       const [includeDashboard, setIncludeDashboard] = useState(initial.includeDashboard !== false);
       const [dashboardLeadDays, setDashboardLeadDays] = useState(Number(initial.dashboardLeadDays) || 2);
       const [customTasks, setCustomTasks] = useState(Array.isArray(initial.customTasks) ? initial.customTasks : []);
@@ -1373,6 +2298,10 @@
       const [skippedTasks, setSkippedTasks] = useState(initial.skippedTasks || {});
       const [shiftHistory, setShiftHistory] = useState(Array.isArray(initial.shiftHistory) ? initial.shiftHistory : []);
       const [taskRoleOverrides, setTaskRoleOverrides] = useState(initial.taskRoleOverrides || {});
+      // Per-task name/notes overrides for both base and custom tasks.
+      // Shape: { [taskId]: { name?: string, notes?: string } }
+      const [taskOverrides, setTaskOverrides] = useState(initial.taskOverrides || {});
+      const [editingTaskId, setEditingTaskId] = useState(null);
       const [openRoleChip, setOpenRoleChip] = useState(null);
 
       // ---- UI-only state ----
@@ -1407,6 +2336,14 @@
           { id: 'revisions', name: 'Revision rounds', days: 3 },
           { id: 'finalize', name: 'Final asset prep & handoff', days: 2 },
         ]);
+        setIncludeLandingPage(!!d.includeLandingPage);
+        setLandingPageStages(Array.isArray(d.landingPageStages) && d.landingPageStages.length > 0 ? d.landingPageStages : [
+          { id: 'lp-discovery', name: 'Discovery & wireframe', days: 3 },
+          { id: 'lp-design', name: 'Design mockup & client review', days: 4 },
+          { id: 'lp-build', name: 'Development & build', days: 5 },
+          { id: 'lp-qa', name: 'QA & client revisions', days: 2 },
+          { id: 'lp-launch', name: 'Final approval & publish', days: 1 },
+        ]);
         setIncludeDashboard(d.includeDashboard !== false);
         setDashboardLeadDays(Number(d.dashboardLeadDays) || 2);
         setCustomTasks(Array.isArray(d.customTasks) ? d.customTasks : []);
@@ -1414,6 +2351,8 @@
         setSkippedTasks(d.skippedTasks || {});
         setShiftHistory(Array.isArray(d.shiftHistory) ? d.shiftHistory : []);
         setTaskRoleOverrides(d.taskRoleOverrides || {});
+        setTaskOverrides(d.taskOverrides || {});
+        setEditingTaskId(null);
         setOpenRoleChip(null);
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [campaign.id]);
@@ -1433,18 +2372,22 @@
           launch_date: launchDate || null,
           data: {
             campaignType, channels, requirements, businessDays,
-            includeInternalCreative, internalStages, includeDashboard, dashboardLeadDays,
+            includeInternalCreative, internalStages,
+            includeLandingPage, landingPageStages,
+            includeDashboard, dashboardLeadDays,
             customTasks, completedTasks, skippedTasks, shiftHistory, originalLaunchDate,
-            taskRoleOverrides,
+            taskRoleOverrides, taskOverrides,
           },
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [
         campaignName, clientName, launchDate,
         campaignType, channels, requirements, businessDays,
-        includeInternalCreative, internalStages, includeDashboard, dashboardLeadDays,
+        includeInternalCreative, internalStages,
+        includeLandingPage, landingPageStages,
+        includeDashboard, dashboardLeadDays,
         customTasks, completedTasks, skippedTasks, shiftHistory, originalLaunchDate,
-        taskRoleOverrides,
+        taskRoleOverrides, taskOverrides,
       ]);
 
       const timeline = useMemo(() => {
@@ -1483,6 +2426,20 @@
           });
         }
 
+        const landingPageTasks = [];
+        if (includeLandingPage) {
+          // LP must be live ahead of the master 'lp-mobile-qa' (~6 days prior).
+          let cumulative = 6;
+          [...landingPageStages].reverse().forEach((stage) => {
+            cumulative += Number(stage.days) || 0;
+            landingPageTasks.unshift({
+              id: `landingpage-${stage.id}`, phase: 'Landing Page', name: stage.name,
+              daysPrior: cumulative, role: 'Landing Page',
+              date: subtract(launch, cumulative, businessDays), timing: 'pre',
+            });
+          });
+        }
+
         const postLaunchTasks = [];
         if (includeDashboard && !preset.excludedPhases.includes('Post-Launch')) {
           const leadDays = Math.max(0, Math.min(4, Number(dashboardLeadDays) || 2));
@@ -1504,7 +2461,7 @@
           });
         }
 
-        const preLaunch = [...filteredTasks, ...custom, ...internalTasks].sort((a, b) => a.date - b.date);
+        const preLaunch = [...filteredTasks, ...custom, ...internalTasks, ...landingPageTasks].sort((a, b) => a.date - b.date);
         const all = [...preLaunch, ...postLaunchTasks];
         const earliest = preLaunch.length > 0 ? preLaunch[0].date : launch;
         const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -1532,13 +2489,16 @@
         const skippedCount = Object.keys(skippedTasks).filter((id) => all.some((t) => t.id === id)).length;
 
         return { all, preLaunch, postLaunchTasks, preByPhase: orderedPreByPhase, postByPhase, earliest, isFeasible, totalRunway, launch, completedCount, totalCount: activeTasks.length, overdueCount, skippedCount };
-      }, [launchDate, campaignType, channels, requirements, businessDays, includeInternalCreative, internalStages, includeDashboard, dashboardLeadDays, customTasks, completedTasks, skippedTasks]);
+      }, [launchDate, campaignType, channels, requirements, businessDays, includeInternalCreative, internalStages, includeLandingPage, landingPageStages, includeDashboard, dashboardLeadDays, customTasks, completedTasks, skippedTasks]);
 
       const toggleChannel = (id) => setChannels((p) => ({ ...p, [id]: !p[id] }));
       const toggleReq = (id) => setRequirements((p) => ({ ...p, [id]: !p[id] }));
       const updateStage = (idx, field, val) => setInternalStages((prev) => prev.map((s, i) => (i === idx ? { ...s, [field]: val } : s)));
       const addStage = () => setInternalStages((prev) => [...prev, { id: `stage-${Date.now()}`, name: 'New stage', days: 2 }]);
       const removeStage = (idx) => setInternalStages((prev) => prev.filter((_, i) => i !== idx));
+      const updateLPStage = (idx, field, val) => setLandingPageStages((prev) => prev.map((s, i) => (i === idx ? { ...s, [field]: val } : s)));
+      const addLPStage = () => setLandingPageStages((prev) => [...prev, { id: `lp-stage-${Date.now()}`, name: 'New stage', days: 2 }]);
+      const removeLPStage = (idx) => setLandingPageStages((prev) => prev.filter((_, i) => i !== idx));
 
       const toggleTaskComplete = (taskId, scheduledDate) => {
         setCompletedTasks((prev) => {
@@ -1577,6 +2537,62 @@
         setCustomTasks((prev) => prev.filter((t) => t.id !== id));
       };
 
+      // Open the custom-task dialog with the phase pre-filled, and a sensible
+      // default daysPrior derived from the existing tasks already in that phase
+      // (closer to the median of what's there) so it slots into place.
+      const openAddTaskInPhase = (phase) => {
+        let defaultDays = 3;
+        if (phase !== 'Custom' && phase !== 'Internal Creative' && phase !== 'Post-Launch') {
+          const inPhase = TASKS.filter((t) => t.phase === phase);
+          if (inPhase.length > 0) {
+            const avg = Math.round(inPhase.reduce((s, t) => s + (t.daysPrior || 0), 0) / inPhase.length);
+            if (Number.isFinite(avg)) defaultDays = avg;
+          }
+        }
+        setCustomTaskDraft({ name: '', phase, daysPrior: defaultDays, role: 'TJA', notes: '' });
+        setShowCustomTaskDialog(true);
+      };
+
+      // Apply / clear name + notes overrides. For custom tasks we mutate the
+      // customTask record directly; for base tasks we store an override keyed
+      // by task id so the source TASKS table stays untouched.
+      const saveTaskEdit = (taskId, patch) => {
+        const isCustom = customTasks.some((t) => t.id === taskId);
+        if (isCustom) {
+          setCustomTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, ...patch } : t)));
+        } else {
+          setTaskOverrides((prev) => {
+            const cur = prev[taskId] || {};
+            const next = { ...cur, ...patch };
+            // Drop the entry entirely if both fields are empty/undefined,
+            // so we don't accumulate noise in the JSON payload.
+            if (!next.name && !next.notes) {
+              const copy = { ...prev };
+              delete copy[taskId];
+              return copy;
+            }
+            return { ...prev, [taskId]: next };
+          });
+        }
+      };
+      const resetTaskEdit = (taskId) => {
+        setTaskOverrides((prev) => {
+          if (!prev[taskId]) return prev;
+          const copy = { ...prev };
+          delete copy[taskId];
+          return copy;
+        });
+      };
+      const getEffectiveTask = (t) => {
+        const o = taskOverrides[t.id];
+        if (!o) return t;
+        return {
+          ...t,
+          name: (o.name && o.name.trim()) ? o.name : t.name,
+          notes: (o.notes !== undefined) ? (o.notes || undefined) : t.notes,
+        };
+      };
+
       const openShiftDialog = () => { setPendingLaunchDate(launchDate); setShiftReason(''); setShowShiftDialog(true); };
       const applyShift = () => {
         if (!pendingLaunchDate || pendingLaunchDate === launchDate) { setShowShiftDialog(false); return; }
@@ -1596,6 +2612,28 @@
         setPendingLaunchDate(fmtDateIso(newDate));
         setShiftReason(days > 0 ? `Pushed out ${days} day${days === 1 ? '' : 's'}` : `Pulled in ${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'}`);
         setShowShiftDialog(true);
+      };
+      // When an internal task slips, propagate the delay to the launch date.
+      // All other pre-launch tasks shift forward automatically because their
+      // dates are computed relative to launch_date — i.e. the rest of the
+      // schedule slides with the launch.
+      const delayTaskBy = (taskName, days) => {
+        if (!launchDate || !Number.isFinite(days) || days === 0) return;
+        const current = new Date(launchDate + 'T12:00:00');
+        const newDate = addCalendarDays(current, days);
+        setPendingLaunchDate(fmtDateIso(newDate));
+        setShiftReason(`${taskName} delayed by ${days} day${Math.abs(days) === 1 ? '' : 's'} — pushing launch & remaining tasks`);
+        setShowShiftDialog(true);
+      };
+      const promptDelayTask = (taskName) => {
+        const input = window.prompt(
+          `"${taskName}" is running late.\n\nHow many days will this delay the launch? (All remaining tasks will shift by the same amount.)`,
+          '1'
+        );
+        if (input === null) return;
+        const days = parseInt(String(input).trim(), 10);
+        if (!Number.isFinite(days) || days <= 0) return;
+        delayTaskBy(taskName, days);
       };
 
       const resetCampaign = () => { setCompletedTasks({}); setSkippedTasks({}); setShiftHistory([]); setOriginalLaunchDate(''); setCustomTasks([]); setTaskRoleOverrides({}); };
@@ -1723,7 +2761,8 @@
         );
       };
 
-      const TaskRow = ({ t }) => {
+      const TaskRow = ({ t: rawT }) => {
+        const t = getEffectiveTask(rawT);
         const status = getTaskStatus(t, completedTasks, skippedTasks, today);
         if (status === 'skipped' && !showSkipped) return null;
         const styleCfg = STATUS_STYLES[status];
@@ -1731,6 +2770,8 @@
         const isDone = status === 'done';
         const isSkipped = status === 'skipped';
         const completion = completedTasks[t.id];
+        const isEditing = editingTaskId === t.id;
+        const isOverridden = !rawT.isCustom && !!taskOverrides[t.id];
         return (
           <div className={`group px-4 md:px-5 py-3 border-b border-stone-800 last:border-b-0 transition-colors ${styleCfg.bg} hover:bg-stone-800/50 print:bg-white print:border-stone-300 print:hover:bg-white ${isSkipped ? 'opacity-50' : ''}`}>
             <div className="flex items-start gap-3 md:gap-4">
@@ -1753,15 +2794,41 @@
               <div className="flex-1 min-w-0">
                 <div className="flex items-start justify-between gap-2 flex-wrap">
                   <div className={`text-sm font-medium ${isDone || isSkipped ? 'text-stone-500 line-through' : 'text-stone-100 print:text-stone-900'}`}>
-                    {t.name}
-                    {t.isCustom && <span className="ml-2 text-[9px] uppercase tracking-wider bg-fuchsia-400/20 text-fuchsia-300 px-1.5 py-0.5 rounded-sm print:bg-fuchsia-100 print:text-fuchsia-900">Custom</span>}
+                    {isEditing ? (
+                      <input
+                        type="text"
+                        defaultValue={t.name}
+                        autoFocus
+                        onBlur={(e) => { saveTaskEdit(t.id, { name: e.target.value }); }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') { e.target.blur(); setEditingTaskId(null); }
+                          if (e.key === 'Escape') { setEditingTaskId(null); }
+                        }}
+                        className="w-full px-2 py-1 bg-stone-800 border border-amber-400 rounded-sm text-sm text-stone-100 focus:outline-none"
+                      />
+                    ) : (
+                      <span>{t.name}</span>
+                    )}
+                    {rawT.isCustom && <span className="ml-2 text-[9px] uppercase tracking-wider bg-fuchsia-400/20 text-fuchsia-300 px-1.5 py-0.5 rounded-sm print:bg-fuchsia-100 print:text-fuchsia-900">Custom</span>}
+                    {isOverridden && !isEditing && <span className="ml-2 text-[9px] uppercase tracking-wider bg-amber-400/20 text-amber-300 px-1.5 py-0.5 rounded-sm print:hidden" title="Customized — click reset to revert">Edited</span>}
                   </div>
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-sm print:border print:border-stone-400 ${ROLE_STYLES[t.role] || 'bg-stone-700 text-stone-100'}`}>{t.role}</span>
                     <RoleChip taskId={t.id} legacyRole={t.role} />
                   </div>
                 </div>
-                {t.notes && <div className="text-xs text-stone-400 mt-1 italic print:text-stone-600">{t.notes}</div>}
+                {isEditing ? (
+                  <textarea
+                    defaultValue={t.notes || ''}
+                    placeholder="Description / notes (optional)"
+                    rows={2}
+                    onBlur={(e) => { saveTaskEdit(t.id, { notes: e.target.value }); }}
+                    onKeyDown={(e) => { if (e.key === 'Escape') { setEditingTaskId(null); } }}
+                    className="w-full mt-1 px-2 py-1 bg-stone-800 border border-stone-700 rounded-sm text-xs text-stone-200 placeholder:text-stone-500 focus:outline-none focus:border-amber-400"
+                  />
+                ) : (
+                  t.notes && <div className="text-xs text-stone-400 mt-1 italic print:text-stone-600">{t.notes}</div>
+                )}
                 <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                   <div className={`flex items-center gap-1 text-[11px] ${status === 'overdue' || status === 'pending-overdue' ? 'text-red-400 font-semibold print:text-red-700' : 'text-stone-400 print:text-stone-600'}`}>
                     <StatusIcon className={`w-3 h-3 ${styleCfg.iconClass}`} />
@@ -1777,11 +2844,34 @@
                   {isDone && completion && <span className="text-[10px] text-emerald-400 font-semibold print:text-emerald-700">Completed {new Date(completion.completedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>}
                 </div>
               </div>
-              <div className="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 print:hidden">
+              <div className={`flex-shrink-0 ${isEditing ? '' : 'opacity-0 group-hover:opacity-100'} transition-opacity flex items-center gap-1 print:hidden`}>
+                {isEditing ? (
+                  <button onClick={() => setEditingTaskId(null)} className="p-1 text-emerald-400 hover:bg-stone-800 rounded" title="Done editing">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                  </button>
+                ) : (
+                  <button onClick={() => setEditingTaskId(t.id)} className="p-1 text-stone-400 hover:text-amber-400 hover:bg-stone-800 rounded" title="Edit name & description">
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                )}
+                {isOverridden && !isEditing && (
+                  <button onClick={() => resetTaskEdit(t.id)} className="p-1 text-stone-400 hover:text-amber-400 hover:bg-stone-800 rounded" title="Reset to default">
+                    <Undo2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+                {!isEditing && !isDone && !isSkipped && t.timing !== 'post' && launchDate && (
+                  <button
+                    onClick={() => promptDelayTask(t.name)}
+                    className="p-1 text-stone-400 hover:text-red-400 hover:bg-stone-800 rounded"
+                    title="Mark this task running late — pushes the launch date and shifts every remaining task by the same amount"
+                  >
+                    <CalendarClock className="w-3.5 h-3.5" />
+                  </button>
+                )}
                 <button onClick={() => toggleTaskSkip(t.id)} className="p-1 text-stone-400 hover:text-amber-400 hover:bg-stone-800 rounded" title={isSkipped ? 'Un-skip' : 'Mark N/A'}>
                   {isSkipped ? <Undo2 className="w-3.5 h-3.5" /> : <SkipForward className="w-3.5 h-3.5" />}
                 </button>
-                {t.isCustom && (
+                {rawT.isCustom && (
                   <button onClick={() => removeCustomTask(t.id)} className="p-1 text-stone-400 hover:text-red-400 hover:bg-stone-800 rounded" title="Delete custom task">
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
@@ -1801,11 +2891,20 @@
           <div className="bg-stone-900 rounded-sm border border-stone-800 overflow-hidden shadow-lg shadow-black/20 print:shadow-none print:break-inside-avoid print:bg-white print:border-stone-300">
             <div className={`relative px-5 py-3 border-b border-stone-800 ${cfg.tint} ${cfg.printTint} print:border-b-2 print:border-stone-900`}>
               <div className={`absolute left-0 top-0 bottom-0 w-1 ${cfg.bar}`}></div>
-              <div className="flex items-center justify-between pl-2">
+              <div className="flex items-center justify-between pl-2 gap-3">
                 <h3 className={`font-black text-sm uppercase tracking-[0.15em] ${cfg.text} ${cfg.printText}`}>{phase}</h3>
-                <span className="text-[10px] font-bold text-stone-400 uppercase tracking-widest print:text-stone-600">
-                  {doneInPhase}/{active.length} done{skipped > 0 && <span className="text-stone-500"> · {skipped} N/A</span>}
-                </span>
+                <div className="flex items-center gap-3">
+                  <span className="text-[10px] font-bold text-stone-400 uppercase tracking-widest print:text-stone-600">
+                    {doneInPhase}/{active.length} done{skipped > 0 && <span className="text-stone-500"> · {skipped} N/A</span>}
+                  </span>
+                  <button
+                    onClick={() => openAddTaskInPhase(phase)}
+                    className="flex items-center gap-1 px-2 py-1 bg-stone-800 hover:bg-amber-400 hover:text-stone-950 text-stone-300 rounded-sm text-[10px] font-bold uppercase tracking-wider transition-colors print:hidden"
+                    title={`Add custom task to ${phase}`}
+                  >
+                    <Plus className="w-3 h-3" /> Add
+                  </button>
+                </div>
               </div>
             </div>
             <div>{tasks.map((t) => <TaskRow key={t.id} t={t} />)}</div>
@@ -2042,6 +3141,31 @@
                         </div>
                       ))}
                       <button onClick={addStage} className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs uppercase tracking-wider font-bold text-stone-300 border border-dashed border-stone-700 rounded-sm hover:bg-stone-800/50 hover:border-amber-400/50 transition-colors">
+                        <Plus className="w-3.5 h-3.5" /> Add stage
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                <div className="bg-stone-900 rounded-sm border border-stone-800 p-5 shadow-lg shadow-black/20">
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input type="checkbox" checked={includeLandingPage} onChange={(e) => setIncludeLandingPage(e.target.checked)} className="w-4 h-4 mt-0.5 accent-pink-400" />
+                    <div className="flex-1">
+                      <div className="font-black text-amber-50 text-xs uppercase tracking-[0.2em]">Landing Page Development</div>
+                      <div className="text-[11px] text-stone-500 mt-0.5">For TJA-built landing pages — stacks upstream of the 6-day LP-mobile-QA milestone</div>
+                    </div>
+                  </label>
+                  {includeLandingPage && (
+                    <div className="mt-4 space-y-2">
+                      {landingPageStages.map((stage, idx) => (
+                        <div key={stage.id} className="flex items-center gap-2 p-2 bg-stone-800/50 rounded-sm border border-stone-800">
+                          <input type="text" value={stage.name} onChange={(e) => updateLPStage(idx, 'name', e.target.value)} className="flex-1 px-2 py-1 text-sm bg-stone-900 border border-stone-700 rounded-sm text-stone-100 focus:outline-none focus:ring-1 focus:ring-pink-400" />
+                          <input type="number" min="0" value={stage.days} onChange={(e) => updateLPStage(idx, 'days', e.target.value)} className="w-14 px-2 py-1 text-sm bg-stone-900 border border-stone-700 rounded-sm text-stone-100 focus:outline-none focus:ring-1 focus:ring-pink-400" />
+                          <span className="text-xs text-stone-400">d</span>
+                          <button onClick={() => removeLPStage(idx)} className="p-1 text-stone-400 hover:bg-red-900/30 hover:text-red-400 rounded transition-colors"><X className="w-3.5 h-3.5" /></button>
+                        </div>
+                      ))}
+                      <button onClick={addLPStage} className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs uppercase tracking-wider font-bold text-stone-300 border border-dashed border-stone-700 rounded-sm hover:bg-stone-800/50 hover:border-pink-400/50 transition-colors">
                         <Plus className="w-3.5 h-3.5" /> Add stage
                       </button>
                     </div>
@@ -3190,6 +4314,14 @@
         generateToolkitPDF({ campaign, placements });
       };
 
+      // Handoff countdown — recomputed every minute so the card stays fresh.
+      const handoff = useMemo(() => computeToolkitHandoff(campaign), [campaign.launch_date, toolkit && toolkit.handoffDaysBeforeLaunch]);
+      const handoffTone = HANDOFF_TONES[handoff.tone];
+      const setHandoffLead = (n) => {
+        const clamped = Math.max(0, Math.min(60, Math.round(Number(n) || 0)));
+        onToolkitChange({ ...(toolkit || {}), handoffDaysBeforeLaunch: clamped });
+      };
+
       return (
         <div className="space-y-4">
           {/* Toolkit header */}
@@ -3225,6 +4357,51 @@
                 >
                   <Download className="w-4 h-4" /> Download PDF
                 </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Handoff countdown — keeps creative aware of the Pathlabs handoff deadline */}
+          <div className={`border rounded-sm p-4 ${handoffTone.bg} ${handoffTone.border}`}>
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 mb-1">
+                  <Clock className={`w-4 h-4 ${handoffTone.text}`} />
+                  <span className="text-[10px] font-black uppercase tracking-[0.25em] text-stone-400">Pass to Paid Media By</span>
+                </div>
+                <div className={`text-xl font-black tracking-tight ${handoffTone.text}`}>
+                  {handoff.label}
+                </div>
+                <div className="mt-1 text-xs text-stone-400 flex items-center gap-2 flex-wrap">
+                  {handoff.handoff ? (
+                    <>
+                      <span>Pass to Paid Media Team by <span className="text-stone-200 font-bold">{fmtDateShort(handoff.handoff)}</span></span>
+                      {handoff.launch && (
+                        <>
+                          <span className="text-stone-700">·</span>
+                          <span>Launch {fmtDateShort(handoff.launch)}</span>
+                        </>
+                      )}
+                    </>
+                  ) : (
+                    <span className="italic">Add a launch date to start the countdown.</span>
+                  )}
+                </div>
+                <div className="mt-2 text-[10px] text-stone-500 italic">
+                  Buffer accounts for Paid Media → Pathlabs handoff. Same-day passthrough isn't always possible.
+                </div>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <label className="text-[10px] font-bold uppercase tracking-widest text-stone-400">Pass to Paid Media</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="60"
+                  value={handoff.lead}
+                  onChange={(e) => setHandoffLead(e.target.value)}
+                  className="w-14 bg-stone-950 border border-stone-700 text-amber-50 text-xs font-bold rounded-sm px-2 py-1 text-center focus:outline-none focus:border-orange-500"
+                />
+                <span className="text-[10px] font-bold uppercase tracking-widest text-stone-400">biz days before launch</span>
               </div>
             </div>
           </div>
@@ -3281,9 +4458,11 @@
     // CAMPAIGN DETAIL (wraps blueprint + toolkit + debounced saves)
     // ============================================================
     function CampaignDetail({ campaign, onBack, onSaved, onLocalUpdate, userEmail }) {
+      const isToolkitOnly = !!(campaign.data && campaign.data.kind === 'toolkit');
       const [saveState, setSaveState] = useState('idle'); // idle | saving | saved | error
       const [saveError, setSaveError] = useState('');
-      const [activeTab, setActiveTab] = useState('blueprint'); // 'blueprint' | 'toolkit'
+      // For standalone toolkits we lock the tab to 'toolkit' (no blueprint).
+      const [activeTab, setActiveTab] = useState(isToolkitOnly ? 'toolkit' : 'blueprint');
       const pendingRef = useRef(null);
       const timerRef = useRef(null);
       const savedTimerRef = useRef(null);
@@ -3305,7 +4484,7 @@
           launch_date: campaign.launch_date,
           data: campaign.data || {},
         };
-        setActiveTab('blueprint');
+        setActiveTab(campaign.data && campaign.data.kind === 'toolkit' ? 'toolkit' : 'blueprint');
       }, [campaign.id]);
 
       const flush = useCallback(async () => {
@@ -3342,15 +4521,19 @@
       // Blueprint pushes its subset of data. We merge with the existing
       // toolkit slice so the toolkit is never wiped.
       const handleBlueprintChange = useCallback((payload) => {
+        const prevData = latestRef.current.data || {};
         const merged = {
           name: payload.name,
           client: payload.client,
           launch_date: payload.launch_date,
           data: {
-            ...(latestRef.current.data || {}),
+            ...prevData,
             ...(payload.data || {}),
             // preserve toolkit
-            toolkit: (latestRef.current.data && latestRef.current.data.toolkit) || undefined,
+            toolkit: (prevData && prevData.toolkit) || undefined,
+            // preserve kind discriminator (defensive — blueprint shouldn't
+            // run for kind === 'toolkit' rows, but never wipe it just in case)
+            ...(prevData.kind ? { kind: prevData.kind } : {}),
           },
         };
         // strip undefined toolkit to keep payload clean
@@ -3366,12 +4549,15 @@
 
       // Toolkit pushes only its slice.
       const handleToolkitChange = useCallback((nextToolkit) => {
+        const prevData = latestRef.current.data || {};
         const merged = {
           name: latestRef.current.name,
           client: latestRef.current.client,
           launch_date: latestRef.current.launch_date,
           data: {
-            ...(latestRef.current.data || {}),
+            ...prevData,
+            // preserve the kind discriminator for standalone toolkits
+            ...(prevData.kind ? { kind: prevData.kind } : {}),
             toolkit: nextToolkit,
           },
         };
@@ -3431,23 +4617,30 @@
                 </div>
               )}
             </div>
-            <div className="flex items-center gap-0.5 bg-stone-900 border border-stone-800 rounded-sm p-0.5 w-fit mb-4">
-              <button
-                onClick={() => setActiveTab('blueprint')}
-                className={`px-3 py-1.5 text-xs font-bold uppercase tracking-wider rounded-sm transition-colors ${activeTab === 'blueprint' ? 'bg-amber-400 text-stone-950' : 'text-stone-400 hover:text-stone-200'}`}
-              >
-                Blueprint
-              </button>
-              <button
-                onClick={() => setActiveTab('toolkit')}
-                className={`px-3 py-1.5 text-xs font-bold uppercase tracking-wider rounded-sm transition-colors ${activeTab === 'toolkit' ? 'bg-orange-500 text-stone-950' : 'text-stone-400 hover:text-stone-200'}`}
-              >
-                Creative Toolkit
-              </button>
-            </div>
+            {!isToolkitOnly && (
+              <div className="flex items-center gap-0.5 bg-stone-900 border border-stone-800 rounded-sm p-0.5 w-fit mb-4">
+                <button
+                  onClick={() => setActiveTab('blueprint')}
+                  className={`px-3 py-1.5 text-xs font-bold uppercase tracking-wider rounded-sm transition-colors ${activeTab === 'blueprint' ? 'bg-amber-400 text-stone-950' : 'text-stone-400 hover:text-stone-200'}`}
+                >
+                  Blueprint
+                </button>
+                <button
+                  onClick={() => setActiveTab('toolkit')}
+                  className={`px-3 py-1.5 text-xs font-bold uppercase tracking-wider rounded-sm transition-colors ${activeTab === 'toolkit' ? 'bg-orange-500 text-stone-950' : 'text-stone-400 hover:text-stone-200'}`}
+                >
+                  Creative Toolkit
+                </button>
+              </div>
+            )}
+            {isToolkitOnly && (
+              <div className="mb-4 inline-flex items-center gap-2 px-3 py-1 bg-orange-500/15 border border-orange-500/40 rounded-sm">
+                <span className="text-[10px] font-black uppercase tracking-[0.2em] text-orange-300">Standalone Toolkit</span>
+              </div>
+            )}
           </div>
 
-          {activeTab === 'blueprint' ? (
+          {activeTab === 'blueprint' && !isToolkitOnly ? (
             <CampaignLaunchBlueprint
               campaign={campaign}
               onBack={onBack}
@@ -3487,7 +4680,20 @@
       const [loading, setLoading] = useState(true);
       const [error, setError] = useState('');
       const [activeId, setActiveId] = useState(null);
-      const [showNew, setShowNew] = useState(false);
+      // Which kind of "+ New …" modal to show: null | 'campaign' | 'toolkit'.
+      // The Dashboard's pill toggle drives this when the user clicks the
+      // create button so the right modal opens for the active tab.
+      const [showNew, setShowNew] = useState(null);
+      // Kind toggle on the Dashboard ('campaign' default | 'toolkit').
+      // Lifted here so the back-button from a detail view can return the
+      // user to the same tab they came from. Pure React state — no
+      // localStorage / sessionStorage per spec.
+      const [dashboardKind, setDashboardKind] = useState('campaign');
+      // Reporting items live here so both the Reporting tab and the main
+      // Calendar view share a single source of truth. Persisted to
+      // localStorage on every change.
+      const [reportingItems, setReportingItems] = useState(() => loadReportingItems());
+      useEffect(() => { saveReportingItems(reportingItems); }, [reportingItems]);
 
       const loadCampaigns = useCallback(async () => {
         setLoading(true);
@@ -3526,7 +4732,11 @@
         }).select().single();
         if (error) throw error;
         setCampaigns((prev) => [row, ...prev]);
-        setShowNew(false);
+        // After creating a toolkit, flip the dashboard tab so back-navigation
+        // returns the user to where they expect (the Toolkits tab).
+        if (data && data.kind === 'toolkit') setDashboardKind('toolkit');
+        else setDashboardKind('campaign');
+        setShowNew(null);
         setActiveId(row.id);
       };
 
@@ -3544,13 +4754,25 @@
       };
       const handleDuplicate = async (c) => {
         try {
-          const dataCopy = c.data ? JSON.parse(JSON.stringify(c.data)) : defaultCampaignData();
-          dataCopy.completedTasks = {};
-          dataCopy.skippedTasks = {};
-          dataCopy.shiftHistory = [];
-          dataCopy.originalLaunchDate = '';
+          const isToolkit = !!(c.data && c.data.kind === 'toolkit');
+          let dataCopy;
+          if (isToolkit) {
+            // Standalone toolkit: just clone placements w/ fresh ids.
+            const srcPlacements = (c.data && c.data.toolkit && Array.isArray(c.data.toolkit.placements))
+              ? c.data.toolkit.placements
+              : [];
+            const cloned = JSON.parse(JSON.stringify(srcPlacements)).map((p) => ({ ...p, id: newPlacementId() }));
+            dataCopy = { kind: 'toolkit', toolkit: { placements: cloned } };
+          } else {
+            dataCopy = c.data ? JSON.parse(JSON.stringify(c.data)) : defaultCampaignData();
+            dataCopy.completedTasks = {};
+            dataCopy.skippedTasks = {};
+            dataCopy.shiftHistory = [];
+            dataCopy.originalLaunchDate = '';
+          }
+          const baseName = c.name || (isToolkit ? 'Toolkit' : 'Campaign');
           const { data: row, error } = await sb.from('campaigns').insert({
-            name: (c.name || 'Campaign') + ' (copy)',
+            name: baseName + ' (copy)',
             client: c.client,
             launch_date: null,
             data: dataCopy,
@@ -3600,10 +4822,20 @@
           ) : (
             <Dashboard
               campaigns={campaigns}
+              reportingItems={reportingItems}
+              setReportingItems={setReportingItems}
               loading={loading}
               error={error}
-              onOpen={(c) => setActiveId(c.id)}
-              onNew={() => setShowNew(true)}
+              kind={dashboardKind}
+              onKindChange={setDashboardKind}
+              onOpen={(c) => {
+                // Remember which kind tab the user came from so the
+                // detail view's "Back to Dashboard" returns there.
+                if (c && c.data && c.data.kind === 'toolkit') setDashboardKind('toolkit');
+                else setDashboardKind('campaign');
+                setActiveId(c.id);
+              }}
+              onNew={(k) => setShowNew(k === 'toolkit' ? 'toolkit' : 'campaign')}
               onArchive={handleArchive}
               onUnarchive={handleUnarchive}
               onDuplicate={handleDuplicate}
@@ -3612,9 +4844,17 @@
             />
           )}
 
-          {showNew && (
+          {showNew === 'campaign' && (
             <NewCampaignModal
-              onClose={() => setShowNew(false)}
+              onClose={() => setShowNew(null)}
+              onCreate={handleCreate}
+              existingClients={Array.from(new Set(campaigns.map((c) => (c.client || '').trim()).filter(Boolean))).sort()}
+              campaigns={campaigns.filter((c) => !(c.data && c.data.kind === 'toolkit'))}
+            />
+          )}
+          {showNew === 'toolkit' && (
+            <NewToolkitModal
+              onClose={() => setShowNew(null)}
               onCreate={handleCreate}
               existingClients={Array.from(new Set(campaigns.map((c) => (c.client || '').trim()).filter(Boolean))).sort()}
               campaigns={campaigns}
