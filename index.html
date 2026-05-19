@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Campaign Launch Dashboard · The James Agency</title>
+  <title>Paid Media Task Manager · The James Agency</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -152,6 +152,8 @@
       { id: 'tiktok-access', phase: 'Account Access', name: 'TikTok Ads Manager access confirmed', daysPrior: 6, role: 'TJA', requires: ['tiktok'] },
       { id: 'pinterest-access', phase: 'Account Access', name: 'Pinterest Ads access confirmed', daysPrior: 6, role: 'TJA', requires: ['pinterest'] },
       { id: 'dsp-setup', phase: 'Account Access', name: 'DSP / Pathlabs account setup', daysPrior: 7, role: 'SCA', requiresAny: ['programmatic', 'ctv', 'dooh'], notes: 'Nexxen / AdSquare integrations as needed' },
+      { id: 'gtm-account-access', phase: 'Account Access', name: 'Google Tag Manager account access confirmed', daysPrior: 6, role: 'TJA', notes: 'Client adds Pathlabs/TJA as user; verify publish permissions' },
+      { id: 'ga4-account-access', phase: 'Account Access', name: 'Google Analytics 4 property access confirmed', daysPrior: 6, role: 'TJA', notes: 'Editor or Marketer role required to configure custom events' },
 
       // === TRACKING & ANALYTICS ===
       { id: 'confirm-conv', phase: 'Tracking & Analytics', name: 'Confirm conversions with client', daysPrior: 7, role: 'AM', notes: 'What exactly are we tracking on which LPs?' },
@@ -245,6 +247,7 @@
     ];
 
     const PHASE_ORDER = [
+      'Media Planning',
       'Contracting & Kickoff',
       'Account Access',
       'Tracking & Analytics',
@@ -268,6 +271,7 @@
       'Creative & LPs': { bar: 'bg-yellow-400', tint: 'bg-yellow-950/40', text: 'text-yellow-300', printTint: 'print:bg-yellow-50', printText: 'print:text-yellow-900' },
       'Internal Creative': { bar: 'bg-red-400', tint: 'bg-red-950/40', text: 'text-red-300', printTint: 'print:bg-red-50', printText: 'print:text-red-900' },
       'Landing Page': { bar: 'bg-pink-400', tint: 'bg-pink-950/40', text: 'text-pink-300', printTint: 'print:bg-pink-50', printText: 'print:text-pink-900' },
+      'Media Planning': { bar: 'bg-teal-400', tint: 'bg-teal-950/40', text: 'text-teal-300', printTint: 'print:bg-teal-50', printText: 'print:text-teal-900' },
       'Targeting & Strategy': { bar: 'bg-pink-400', tint: 'bg-pink-950/40', text: 'text-pink-300', printTint: 'print:bg-pink-50', printText: 'print:text-pink-900' },
       'Paid Search': { bar: 'bg-emerald-400', tint: 'bg-emerald-950/40', text: 'text-emerald-300', printTint: 'print:bg-emerald-50', printText: 'print:text-emerald-900' },
       'Facebook / Meta': { bar: 'bg-blue-400', tint: 'bg-blue-950/40', text: 'text-blue-300', printTint: 'print:bg-blue-50', printText: 'print:text-blue-900' },
@@ -377,6 +381,7 @@
         const internalStages = Array.isArray(data.internalStages) ? data.internalStages : [];
         const includeLandingPage = !!data.includeLandingPage;
         const landingPageStages = Array.isArray(data.landingPageStages) ? data.landingPageStages : [];
+        const mediaPlanStages = Array.isArray(data.mediaPlanStages) ? data.mediaPlanStages : [];
         const includeDashboard = data.includeDashboard !== false;
         const dashboardLeadDays = Math.max(0, Math.min(4, Number(data.dashboardLeadDays) || 2));
         const overrides = data.taskRoleOverrides || {};
@@ -452,6 +457,18 @@
             const id = `landingpage-${stage.id}`;
             const date = subtract(launch, cumulative, businessDays);
             pushEvent(id, stage.name, date, 'Landing Page', false);
+          });
+        }
+
+        // Pathlabs media plan runway — anchored to launch − 6 biz days
+        if ((requirements && requirements.pathlabsMediaPlan) && mediaPlanStages.length > 0) {
+          let cumulative = 6;
+          [...mediaPlanStages].reverse().forEach((stage) => {
+            cumulative += Number(stage.days) || 0;
+            const id = `mediaplan-${stage.id}`;
+            const date = subtract(launch, cumulative, businessDays);
+            const isPathlabsStage = /pathlabs/i.test(stage.name) || /pathlabs/i.test(stage.id || '');
+            pushEvent(id, stage.name, date, isPathlabsStage ? 'SCA' : 'TJA', false);
           });
         }
 
@@ -558,6 +575,144 @@
     };
 
     // ============================================================
+    // PATHLABS MEDIA BRIEF
+    // Field set comes directly from the Pathlabs Client Media Brief
+    // template. Each field is captured as a string so we can dump the
+    // filled-in brief to clipboard / PDF when sending to Pathlabs.
+    // ============================================================
+    const MEDIA_BRIEF_FIELDS = [
+      { key: 'advertiserName',         label: 'Advertiser Name',                required: true,  hint: '' },
+      { key: 'businessObjective',      label: 'Business Objective',             required: true,  hint: '' },
+      { key: 'campaignGoal',           label: 'Campaign Goal',                  required: true,  hint: '' },
+      { key: 'campaignKPI',            label: 'Campaign KPI',                   required: true,  hint: 'Note if Pathlabs should recommend a KPI' },
+      { key: 'flightDates',            label: 'Desired Flight Dates',           required: true,  hint: '' },
+      { key: 'geoTarget',              label: 'Geographic Target',              required: true,  hint: '' },
+      { key: 'channels',               label: 'Channels',                       required: true,  hint: 'Required channels — or note if Pathlabs should recommend' },
+      { key: 'targetAudience',         label: 'Target Audience',                required: true,  hint: 'Age, gender, behaviors, interests, etc.' },
+      { key: 'budget',                 label: 'Budget',                         required: true,  hint: '' },
+      { key: 'creativeAssets',         label: 'Available/Expected Creative Assets', required: true, hint: 'Channels the advertiser will have creative for' },
+      { key: 'proposalDueDate',        label: 'Media Proposal Due Date',        required: false, hint: '' },
+      { key: 'targetRates',            label: 'Target Rates by Channel',        required: false, hint: 'Any rate requirements' },
+      { key: 'pastChannels',           label: 'Current and/or Past Channels',   required: false, hint: '' },
+      { key: 'landingPages',           label: 'Landing Page(s)',                required: false, hint: '' },
+      { key: 'sitesideTracking',       label: 'Siteside Tracking (Y/N)',        required: true,  hint: 'Pathlabs can place tracking via GTM or provide pixels' },
+      { key: 'gaAccess',               label: 'Google Analytics Access (Y/N)',  required: false, hint: '' },
+      { key: 'siteVolume',             label: 'Estimated Monthly Site Volume',  required: false, hint: 'Used to estimate retargeting rates' },
+      { key: 'firstPartyData',         label: 'First Party Data Access (Y/N)',  required: false, hint: 'Pathlabs partners with LiveRamp for 1:1 and lookalike targeting' },
+      { key: 'crm',                    label: 'Advertiser CRM',                 required: false, hint: 'Helpful for Lead Gen + first-party data usage' },
+      { key: 'specialNotes',           label: 'Special Notes & Learnings',      required: false, hint: 'Requirements / learnings not captured above' },
+      { key: 'deliverableDueDate',     label: 'Requested Deliverable & Agency Due Date', required: false, hint: '' },
+    ];
+    function blankMediaBrief() {
+      const o = {};
+      MEDIA_BRIEF_FIELDS.forEach((f) => { o[f.key] = ''; });
+      return o;
+    }
+    function generateMediaBriefPDF({ brief, campaign }) {
+      if (!window.jspdf || !window.jspdf.jsPDF) {
+        alert('PDF library failed to load. Please refresh and try again.');
+        return;
+      }
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({ orientation: 'portrait', unit: 'in', format: 'letter' });
+      const pageW = doc.internal.pageSize.getWidth();   // 8.5
+      const pageH = doc.internal.pageSize.getHeight();  // 11
+      const marginX = 0.5;
+
+      // ----- Header -----
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(0, 0, 0);
+      doc.setFontSize(20);
+      doc.text('Media Brief', marginX, 0.7);
+      // pathlabs logo placeholder (text only — avoids licensing/image embedding)
+      doc.setFontSize(14);
+      doc.setTextColor(20, 130, 200);
+      doc.text('pathlabs', pageW - marginX, 0.7, { align: 'right' });
+
+      // Campaign / client sub-header
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      doc.setTextColor(80, 80, 80);
+      const subBits = [];
+      if (campaign && campaign.client)  subBits.push(`Client: ${campaign.client}`);
+      if (campaign && campaign.name)    subBits.push(`Campaign: ${campaign.name}`);
+      subBits.push(`Exported: ${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}`);
+      doc.text(subBits.join('  ·  '), marginX, 0.95);
+
+      // ----- Table body -----
+      const body = MEDIA_BRIEF_FIELDS.map((f) => {
+        const labelLine = `${f.label}${f.required ? '**' : ''}`;
+        const hintLine = f.hint ? `\n${f.hint}` : '';
+        return [
+          { content: labelLine + hintLine, styles: { fontStyle: 'bold' } },
+          { content: (brief && brief[f.key]) || '' },
+        ];
+      });
+
+      doc.autoTable({
+        startY: 1.15,
+        head: [[
+          { content: 'DETAILS\n** indicates required field', styles: { halign: 'left', fontStyle: 'bold' } },
+          { content: 'RESPONSE', styles: { halign: 'left', fontStyle: 'bold' } },
+        ]],
+        body,
+        theme: 'grid',
+        margin: { left: marginX, right: marginX },
+        styles: {
+          font: 'helvetica',
+          fontSize: 9,
+          cellPadding: { top: 0.08, right: 0.1, bottom: 0.08, left: 0.1 },
+          textColor: [30, 30, 30],
+          lineColor: [200, 200, 210],
+          lineWidth: 0.005,
+          valign: 'top',
+        },
+        headStyles: {
+          fillColor: [240, 244, 250],
+          textColor: [40, 40, 40],
+          fontSize: 9,
+          lineColor: [200, 200, 210],
+          lineWidth: 0.005,
+        },
+        columnStyles: {
+          0: { cellWidth: 2.6, fillColor: [248, 250, 253] },
+          1: { cellWidth: pageW - marginX * 2 - 2.6 },
+        },
+        didParseCell: (data) => {
+          // Render hint lines (after first line in label cell) in italic + muted
+          if (data.column.index === 0 && data.section === 'body') {
+            const cellText = Array.isArray(data.cell.text) ? data.cell.text : [data.cell.text];
+            if (cellText.length > 1) {
+              data.cell.styles.fontSize = 8.5;
+            }
+          }
+        },
+      });
+
+      // Save with descriptive filename
+      const sanitize = (s) => (s || '').replace(/[^a-zA-Z0-9 _-]/g, '').trim().replace(/\s+/g, '_');
+      const filename = [
+        'Pathlabs_Media_Brief',
+        sanitize(campaign && campaign.client),
+        sanitize(campaign && campaign.name),
+      ].filter(Boolean).join('-') + '.pdf';
+      doc.save(filename);
+    }
+
+    function mediaBriefToText(brief, campaign) {
+      const lines = ['PATHLABS — MEDIA BRIEF'];
+      if (campaign && campaign.name) lines.push(`Campaign: ${campaign.name}`);
+      if (campaign && campaign.client) lines.push(`Client: ${campaign.client}`);
+      lines.push('');
+      MEDIA_BRIEF_FIELDS.forEach((f) => {
+        const v = (brief && brief[f.key]) || '';
+        const req = f.required ? ' **' : '';
+        lines.push(`${f.label}${req}: ${v || '—'}`);
+      });
+      return lines.join('\n');
+    }
+
+    // ============================================================
     // DEFAULTS FOR NEW CAMPAIGN DATA
     // ============================================================
     function defaultCampaignData() {
@@ -568,7 +723,9 @@
           newGTM: false, clientPlacesPixels: false, firstPartyData: false,
           newLandingPages: false, callTracking: false, videoCreative: false,
           brandSafetyReview: false, legalReview: false,
+          pathlabsMediaPlan: false,
         },
+        mediaBrief: blankMediaBrief(),
         businessDays: true,
         includeInternalCreative: false,
         internalStages: [
@@ -584,6 +741,11 @@
           { id: 'lp-build', name: 'Development & build', days: 5 },
           { id: 'lp-qa', name: 'QA & client revisions', days: 2 },
           { id: 'lp-launch', name: 'Final approval & publish', days: 1 },
+        ],
+        mediaPlanStages: [
+          { id: 'mp-brief', name: 'Brief drafting & internal review', days: 2 },
+          { id: 'mp-pathlabs', name: 'Pathlabs audience research & strategic recommendations', days: 10 },
+          { id: 'mp-review', name: 'Internal plan review & client approval', days: 2 },
         ],
         includeDashboard: true,
         dashboardLeadDays: 2,
@@ -622,6 +784,7 @@
         const internalStages = Array.isArray(data.internalStages) ? data.internalStages : [];
         const includeLandingPage = !!data.includeLandingPage;
         const landingPageStages = Array.isArray(data.landingPageStages) ? data.landingPageStages : [];
+        const mediaPlanStages = Array.isArray(data.mediaPlanStages) ? data.mediaPlanStages : [];
         const includeDashboard = data.includeDashboard !== false;
         const dashboardLeadDays = Number(data.dashboardLeadDays) || 2;
 
@@ -663,6 +826,18 @@
           });
         }
 
+        const mediaPlanTasks = [];
+        if (requirements.pathlabsMediaPlan && mediaPlanStages.length > 0) {
+          let cumulative = 6;
+          [...mediaPlanStages].reverse().forEach((stage) => {
+            cumulative += Number(stage.days) || 0;
+            mediaPlanTasks.unshift({
+              id: `mediaplan-${stage.id}`, phase: 'Media Planning', name: stage.name,
+              daysPrior: cumulative, role: 'TJA', timing: 'pre',
+            });
+          });
+        }
+
         const postLaunch = [];
         if (includeDashboard && !preset.excludedPhases.includes('Post-Launch')) {
           const leadDays = Math.max(0, Math.min(4, dashboardLeadDays));
@@ -671,7 +846,7 @@
           postLaunch.push({ id: 'week-1-optimize', timing: 'post' });
         }
 
-        const all = [...filtered, ...custom, ...internalTasks, ...landingPageTasks, ...postLaunch];
+        const all = [...filtered, ...custom, ...internalTasks, ...landingPageTasks, ...mediaPlanTasks, ...postLaunch];
         const active = all.filter((t) => !skippedTasks[t.id]);
         const completed = active.filter((t) => completedTasks[t.id]).length;
         const total = active.length;
@@ -750,7 +925,7 @@
                 </div>
                 <div>
                   <div className="text-[10px] uppercase tracking-[0.3em] font-bold text-amber-400">The James Agency</div>
-                  <h1 className="text-lg font-black text-amber-50 uppercase tracking-tight">Campaign Launch</h1>
+                  <h1 className="text-lg font-black text-amber-50 uppercase tracking-tight">Paid Media Task Manager</h1>
                 </div>
               </div>
               <form onSubmit={handleSignIn} className="space-y-3">
@@ -849,7 +1024,7 @@
               </div>
               <div>
                 <div className="text-[10px] uppercase tracking-[0.3em] font-bold text-amber-400">The James Agency</div>
-                <h1 className="text-2xl font-black text-amber-50 tracking-tight uppercase">Campaign Launch Dashboard</h1>
+                <h1 className="text-2xl font-black text-amber-50 tracking-tight uppercase">Paid Media Task Manager</h1>
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -2274,7 +2449,11 @@
         newGTM: false, clientPlacesPixels: false, firstPartyData: false,
         newLandingPages: false, callTracking: false, videoCreative: false,
         brandSafetyReview: false, legalReview: false,
+        pathlabsMediaPlan: false,
       });
+      const [mediaBrief, setMediaBrief] = useState({ ...blankMediaBrief(), ...(initial.mediaBrief || {}) });
+      const [showMediaBrief, setShowMediaBrief] = useState(false);
+      const [mediaBriefCopied, setMediaBriefCopied] = useState(false);
       const [businessDays, setBusinessDays] = useState(initial.businessDays !== false);
       const [includeInternalCreative, setIncludeInternalCreative] = useState(!!initial.includeInternalCreative);
       const [internalStages, setInternalStages] = useState(Array.isArray(initial.internalStages) && initial.internalStages.length > 0 ? initial.internalStages : [
@@ -2290,6 +2469,11 @@
         { id: 'lp-build', name: 'Development & build', days: 5 },
         { id: 'lp-qa', name: 'QA & client revisions', days: 2 },
         { id: 'lp-launch', name: 'Final approval & publish', days: 1 },
+      ]);
+      const [mediaPlanStages, setMediaPlanStages] = useState(Array.isArray(initial.mediaPlanStages) && initial.mediaPlanStages.length > 0 ? initial.mediaPlanStages : [
+        { id: 'mp-brief', name: 'Brief drafting & internal review', days: 2 },
+        { id: 'mp-pathlabs', name: 'Pathlabs audience research & strategic recommendations', days: 10 },
+        { id: 'mp-review', name: 'Internal plan review & client approval', days: 2 },
       ]);
       const [includeDashboard, setIncludeDashboard] = useState(initial.includeDashboard !== false);
       const [dashboardLeadDays, setDashboardLeadDays] = useState(Number(initial.dashboardLeadDays) || 2);
@@ -2327,7 +2511,11 @@
           newGTM: false, clientPlacesPixels: false, firstPartyData: false,
           newLandingPages: false, callTracking: false, videoCreative: false,
           brandSafetyReview: false, legalReview: false,
+          pathlabsMediaPlan: false,
         });
+        setMediaBrief({ ...blankMediaBrief(), ...(d.mediaBrief || {}) });
+        setShowMediaBrief(false);
+        setMediaBriefCopied(false);
         setBusinessDays(d.businessDays !== false);
         setIncludeInternalCreative(!!d.includeInternalCreative);
         setInternalStages(Array.isArray(d.internalStages) && d.internalStages.length > 0 ? d.internalStages : [
@@ -2343,6 +2531,11 @@
           { id: 'lp-build', name: 'Development & build', days: 5 },
           { id: 'lp-qa', name: 'QA & client revisions', days: 2 },
           { id: 'lp-launch', name: 'Final approval & publish', days: 1 },
+        ]);
+        setMediaPlanStages(Array.isArray(d.mediaPlanStages) && d.mediaPlanStages.length > 0 ? d.mediaPlanStages : [
+          { id: 'mp-brief', name: 'Brief drafting & internal review', days: 2 },
+          { id: 'mp-pathlabs', name: 'Pathlabs audience research & strategic recommendations', days: 10 },
+          { id: 'mp-review', name: 'Internal plan review & client approval', days: 2 },
         ]);
         setIncludeDashboard(d.includeDashboard !== false);
         setDashboardLeadDays(Number(d.dashboardLeadDays) || 2);
@@ -2374,9 +2567,10 @@
             campaignType, channels, requirements, businessDays,
             includeInternalCreative, internalStages,
             includeLandingPage, landingPageStages,
+            mediaPlanStages,
             includeDashboard, dashboardLeadDays,
             customTasks, completedTasks, skippedTasks, shiftHistory, originalLaunchDate,
-            taskRoleOverrides, taskOverrides,
+            taskRoleOverrides, taskOverrides, mediaBrief,
           },
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2385,9 +2579,10 @@
         campaignType, channels, requirements, businessDays,
         includeInternalCreative, internalStages,
         includeLandingPage, landingPageStages,
+        mediaPlanStages,
         includeDashboard, dashboardLeadDays,
         customTasks, completedTasks, skippedTasks, shiftHistory, originalLaunchDate,
-        taskRoleOverrides, taskOverrides,
+        taskRoleOverrides, taskOverrides, mediaBrief,
       ]);
 
       const timeline = useMemo(() => {
@@ -2440,6 +2635,23 @@
           });
         }
 
+        const mediaPlanTasks = [];
+        if (requirements.pathlabsMediaPlan) {
+          // Media plan must be approved before budgets / channel work kicks
+          // off — anchor end of runway to launch − 6 biz days. Total default
+          // runway = 14 biz days (2 brief + 10 Pathlabs + 2 review).
+          let cumulative = 6;
+          [...mediaPlanStages].reverse().forEach((stage) => {
+            cumulative += Number(stage.days) || 0;
+            const isPathlabsStage = /pathlabs/i.test(stage.name) || /pathlabs/i.test(stage.id || '');
+            mediaPlanTasks.unshift({
+              id: `mediaplan-${stage.id}`, phase: 'Media Planning', name: stage.name,
+              daysPrior: cumulative, role: isPathlabsStage ? 'SCA' : 'TJA',
+              date: subtract(launch, cumulative, businessDays), timing: 'pre',
+            });
+          });
+        }
+
         const postLaunchTasks = [];
         if (includeDashboard && !preset.excludedPhases.includes('Post-Launch')) {
           const leadDays = Math.max(0, Math.min(4, Number(dashboardLeadDays) || 2));
@@ -2461,7 +2673,7 @@
           });
         }
 
-        const preLaunch = [...filteredTasks, ...custom, ...internalTasks, ...landingPageTasks].sort((a, b) => a.date - b.date);
+        const preLaunch = [...filteredTasks, ...custom, ...internalTasks, ...landingPageTasks, ...mediaPlanTasks].sort((a, b) => a.date - b.date);
         const all = [...preLaunch, ...postLaunchTasks];
         const earliest = preLaunch.length > 0 ? preLaunch[0].date : launch;
         const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -2489,7 +2701,7 @@
         const skippedCount = Object.keys(skippedTasks).filter((id) => all.some((t) => t.id === id)).length;
 
         return { all, preLaunch, postLaunchTasks, preByPhase: orderedPreByPhase, postByPhase, earliest, isFeasible, totalRunway, launch, completedCount, totalCount: activeTasks.length, overdueCount, skippedCount };
-      }, [launchDate, campaignType, channels, requirements, businessDays, includeInternalCreative, internalStages, includeLandingPage, landingPageStages, includeDashboard, dashboardLeadDays, customTasks, completedTasks, skippedTasks]);
+      }, [launchDate, campaignType, channels, requirements, businessDays, includeInternalCreative, internalStages, includeLandingPage, landingPageStages, mediaPlanStages, includeDashboard, dashboardLeadDays, customTasks, completedTasks, skippedTasks]);
 
       const toggleChannel = (id) => setChannels((p) => ({ ...p, [id]: !p[id] }));
       const toggleReq = (id) => setRequirements((p) => ({ ...p, [id]: !p[id] }));
@@ -2499,6 +2711,9 @@
       const updateLPStage = (idx, field, val) => setLandingPageStages((prev) => prev.map((s, i) => (i === idx ? { ...s, [field]: val } : s)));
       const addLPStage = () => setLandingPageStages((prev) => [...prev, { id: `lp-stage-${Date.now()}`, name: 'New stage', days: 2 }]);
       const removeLPStage = (idx) => setLandingPageStages((prev) => prev.filter((_, i) => i !== idx));
+      const updateMPStage = (idx, field, val) => setMediaPlanStages((prev) => prev.map((s, i) => (i === idx ? { ...s, [field]: val } : s)));
+      const addMPStage = () => setMediaPlanStages((prev) => [...prev, { id: `mp-stage-${Date.now()}`, name: 'New stage', days: 2 }]);
+      const removeMPStage = (idx) => setMediaPlanStages((prev) => prev.filter((_, i) => i !== idx));
 
       const toggleTaskComplete = (taskId, scheduledDate) => {
         setCompletedTasks((prev) => {
@@ -3103,6 +3318,7 @@
                         <RequirementToggle id="callTracking" label="Call Tracking (CallRail)" hint="Adds CallRail setup & QA tasks" />
                         <RequirementToggle id="videoCreative" label="Video Creative Production" hint="Adds video asset delivery task" />
                         <RequirementToggle id="newLandingPages" label="New Landing Pages" hint="Toggle off if using existing LPs" />
+                        <RequirementToggle id="pathlabsMediaPlan" label="Pathlabs Media Plan Deliverable" hint="Adds brief → plan → approval tasks + opens the brief template below" />
                       </div>
                     </div>
                     <div>
@@ -3193,6 +3409,97 @@
                     </div>
                   )}
                 </div>
+
+                {/* Pathlabs Media Plan runway — stage editor */}
+                {requirements.pathlabsMediaPlan && (
+                  <div className="bg-stone-900 rounded-sm border border-teal-700/40 p-5 shadow-lg shadow-black/20">
+                    <h2 className="font-black text-amber-50 text-xs uppercase tracking-[0.2em] mb-2 pb-3 border-b border-stone-800 flex items-center gap-2">
+                      <CalendarClock className="w-3.5 h-3.5 text-teal-300" /> Media Plan Runway
+                      <span className="ml-auto text-stone-500 text-[10px] font-normal normal-case tracking-normal">
+                        {mediaPlanStages.reduce((s, x) => s + (Number(x.days) || 0), 0)} biz days total
+                      </span>
+                    </h2>
+                    <p className="text-[11px] text-stone-500 mb-3">Anchored to launch &minus; 6 biz days. Pathlabs typically needs <span className="text-teal-300 font-bold">up to 10 business days</span> for audience research + strategic recommendations.</p>
+                    <div className="space-y-2">
+                      {mediaPlanStages.map((stage, idx) => (
+                        <div key={stage.id} className="flex items-center gap-2 p-2 bg-stone-800/50 rounded-sm border border-stone-800">
+                          <input type="text" value={stage.name} onChange={(e) => updateMPStage(idx, 'name', e.target.value)} className="flex-1 px-2 py-1 text-sm bg-stone-900 border border-stone-700 rounded-sm text-stone-100 focus:outline-none focus:ring-1 focus:ring-teal-400" />
+                          <input type="number" min="0" value={stage.days} onChange={(e) => updateMPStage(idx, 'days', e.target.value)} className="w-14 px-2 py-1 text-sm bg-stone-900 border border-stone-700 rounded-sm text-stone-100 focus:outline-none focus:ring-1 focus:ring-teal-400" />
+                          <span className="text-xs text-stone-400">d</span>
+                          <button onClick={() => removeMPStage(idx)} className="p-1 text-stone-400 hover:bg-red-900/30 hover:text-red-400 rounded transition-colors"><X className="w-3.5 h-3.5" /></button>
+                        </div>
+                      ))}
+                      <button onClick={addMPStage} className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs uppercase tracking-wider font-bold text-stone-300 border border-dashed border-stone-700 rounded-sm hover:bg-stone-800/50 hover:border-teal-400/50 transition-colors">
+                        <Plus className="w-3.5 h-3.5" /> Add stage
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Pathlabs Media Brief — shown only when the requirement is on */}
+                {requirements.pathlabsMediaPlan && (
+                  <div className="bg-stone-900 rounded-sm border border-teal-700/40 p-5 shadow-lg shadow-black/20">
+                    <div className="flex items-center justify-between mb-3 pb-3 border-b border-stone-800 gap-2">
+                      <h2 className="font-black text-amber-50 text-xs uppercase tracking-[0.2em] flex items-center gap-2">
+                        <FolderOpen className="w-3.5 h-3.5 text-teal-300" /> Pathlabs Media Brief
+                      </h2>
+                      <button
+                        onClick={() => setShowMediaBrief((s) => !s)}
+                        className="text-[10px] font-bold uppercase tracking-wider text-stone-300 hover:text-amber-400"
+                      >
+                        {showMediaBrief ? 'Collapse' : 'Open'} {showMediaBrief ? <ChevronUp className="inline w-3 h-3" /> : <ChevronDown className="inline w-3 h-3" />}
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-stone-500 mb-3">Fill out the Pathlabs brief template directly here, then copy the completed brief to share with Pathlabs.</p>
+                    {showMediaBrief && (
+                      <div className="space-y-3">
+                        {MEDIA_BRIEF_FIELDS.map((f) => (
+                          <div key={f.key}>
+                            <label className="block text-[11px] font-bold uppercase tracking-wider text-stone-300 mb-1">
+                              {f.label}
+                              {f.required && <span className="text-teal-300 ml-1" title="Required by Pathlabs">**</span>}
+                            </label>
+                            {f.hint && <p className="text-[10px] text-stone-500 italic mb-1">{f.hint}</p>}
+                            <textarea
+                              value={mediaBrief[f.key] || ''}
+                              onChange={(e) => setMediaBrief((prev) => ({ ...prev, [f.key]: e.target.value }))}
+                              rows={f.key === 'specialNotes' || f.key === 'businessObjective' || f.key === 'targetAudience' ? 3 : 2}
+                              className="w-full px-2 py-1.5 text-xs bg-stone-950 border border-stone-700 rounded-sm text-stone-100 placeholder:text-stone-600 focus:outline-none focus:ring-1 focus:ring-teal-400"
+                              placeholder={f.required ? 'Required' : 'Optional'}
+                            />
+                          </div>
+                        ))}
+                        <div className="flex items-center gap-2 pt-2 border-t border-stone-800 flex-wrap">
+                          <button
+                            onClick={() => generateMediaBriefPDF({ brief: mediaBrief, campaign: { name: campaignName, client: clientName } })}
+                            className="flex items-center gap-1.5 px-3 py-2 bg-teal-500 text-stone-950 rounded-sm text-xs font-black uppercase tracking-wider hover:bg-teal-400"
+                          >
+                            <Download className="w-3.5 h-3.5" /> Download brief PDF
+                          </button>
+                          <button
+                            onClick={async () => {
+                              try {
+                                await navigator.clipboard.writeText(mediaBriefToText(mediaBrief, { name: campaignName, client: clientName }));
+                                setMediaBriefCopied(true);
+                                setTimeout(() => setMediaBriefCopied(false), 2000);
+                              } catch {}
+                            }}
+                            className="flex items-center gap-1.5 px-3 py-2 bg-stone-800 text-stone-200 rounded-sm text-xs font-bold uppercase tracking-wider hover:bg-stone-700"
+                            title="Plain text copy — useful for pasting into email/Slack"
+                          >
+                            <Copy className="w-3.5 h-3.5" /> {mediaBriefCopied ? 'Copied!' : 'Copy as text'}
+                          </button>
+                          <button
+                            onClick={() => { if (confirm('Clear all media brief fields?')) setMediaBrief(blankMediaBrief()); }}
+                            className="px-3 py-2 bg-stone-800 text-stone-300 rounded-sm text-xs font-bold uppercase tracking-wider hover:bg-stone-700 ml-auto"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Custom Tasks Manager */}
                 <div className="bg-stone-900 rounded-sm border border-stone-800 p-5 shadow-lg shadow-black/20">
