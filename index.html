@@ -27,7 +27,7 @@
       FolderOpen, Plus, X, Info, Zap, Download, History, ChevronDown, ChevronUp,
       RefreshCw, CalendarClock, CircleDashed, SkipForward, Undo2, LogOut, LogIn,
       ArrowLeft, Archive, ArchiveRestore, LayoutGrid, CalendarDays, Search,
-      ChevronLeft, ChevronRight, Loader2, AlertCircle, Flag, Filter, Pencil
+      ChevronLeft, ChevronRight, Loader2, AlertCircle, Flag, Filter, Pencil, ListChecks
     } = LucideReact;
 
     // ============================================================
@@ -84,12 +84,19 @@
     // ============================================================
     const TOOLKIT_HANDOFF_DEFAULT = 7;
     function computeToolkitHandoff(campaign) {
-      const lead = (campaign && campaign.data && campaign.data.toolkit && Number.isFinite(campaign.data.toolkit.handoffDaysBeforeLaunch))
-        ? campaign.data.toolkit.handoffDaysBeforeLaunch
+      const tk = campaign && campaign.data && campaign.data.toolkit;
+      const lead = (tk && Number.isFinite(tk.handoffDaysBeforeLaunch))
+        ? tk.handoffDaysBeforeLaunch
         : TOOLKIT_HANDOFF_DEFAULT;
+      const complete = !!(tk && tk.complete);
       const launch = campaign && campaign.launch_date ? parseDateSafe(campaign.launch_date) : null;
+      // Completed toolkits short-circuit the countdown entirely — no more
+      // overdue pings once the team has shipped the toolkit to paid media.
+      if (complete) {
+        return { lead, launch, handoff: launch ? startOfDay(addBusinessDays(launch, -lead)) : null, businessDaysLeft: null, label: 'Passed to Paid Media', tone: 'complete', complete: true };
+      }
       if (!launch) {
-        return { lead, launch: null, handoff: null, businessDaysLeft: null, label: 'Set a launch date', tone: 'muted' };
+        return { lead, launch: null, handoff: null, businessDaysLeft: null, label: 'Set a launch date', tone: 'muted', complete: false };
       }
       const handoff = startOfDay(addBusinessDays(launch, -lead));
       const today = startOfDay(new Date());
@@ -109,13 +116,14 @@
         label = `${businessDaysLeft} business days until pass to Paid Media`;
         tone = 'green';
       }
-      return { lead, launch, handoff, businessDaysLeft, label, tone };
+      return { lead, launch, handoff, businessDaysLeft, label, tone, complete: false };
     }
     const HANDOFF_TONES = {
-      green:  { text: 'text-emerald-300', bg: 'bg-emerald-950/40', border: 'border-emerald-800/60', dot: 'bg-emerald-400' },
-      orange: { text: 'text-orange-300',  bg: 'bg-orange-950/40',  border: 'border-orange-800/60',  dot: 'bg-orange-400' },
-      red:    { text: 'text-red-300',     bg: 'bg-red-950/40',     border: 'border-red-800/60',     dot: 'bg-red-400' },
-      muted:  { text: 'text-stone-400',   bg: 'bg-stone-900',      border: 'border-stone-800',      dot: 'bg-stone-600' },
+      green:    { text: 'text-emerald-300', bg: 'bg-emerald-950/40', border: 'border-emerald-800/60', dot: 'bg-emerald-400' },
+      orange:   { text: 'text-orange-300',  bg: 'bg-orange-950/40',  border: 'border-orange-800/60',  dot: 'bg-orange-400' },
+      red:      { text: 'text-red-300',     bg: 'bg-red-950/40',     border: 'border-red-800/60',     dot: 'bg-red-400' },
+      muted:    { text: 'text-stone-400',   bg: 'bg-stone-900',      border: 'border-stone-800',      dot: 'bg-stone-600' },
+      complete: { text: 'text-emerald-300', bg: 'bg-emerald-950/40', border: 'border-emerald-800/60', dot: 'bg-emerald-400' },
     };
 
     function parseDateSafe(s) {
@@ -965,12 +973,16 @@
     // The toggle lives in React state on Dashboard. Selection is also
     // forwarded up via onKindChange so the parent can remember which
     // tab a user came from when they open a detail view.
-    function Dashboard({ campaigns, reportingItems, setReportingItems, loading, error, kind, onKindChange, onOpen, onNew, onArchive, onUnarchive, onDuplicate, onDelete, onRefresh }) {
+    function Dashboard({ campaigns, reportingItems, setReportingItems, loading, error, view, onViewChange, onOpen, onNew, onArchive, onUnarchive, onDuplicate, onDelete, onRefresh }) {
       const [statusFilter, setStatusFilter] = useState('active');
       const [clientFilter, setClientFilter] = useState('all');
       const [sortBy, setSortBy] = useState('launch');
-      const [view, setView] = useState('list');
       const [confirmDelete, setConfirmDelete] = useState(null);
+      // Derive the campaign-cards `kind` from the active view so the
+      // existing filtering / "+ New" plumbing keeps working without
+      // a second toggle.
+      const kind = view === 'toolkits' ? 'toolkit' : 'campaign';
+      const onKindChange = (k) => onViewChange(k === 'toolkit' ? 'toolkits' : 'campaigns');
 
       const isToolkitItem = (c) => !!(c && c.data && c.data.kind === 'toolkit');
       const isCampaignItem = (c) => !isToolkitItem(c);
@@ -1027,52 +1039,43 @@
                 <h1 className="text-2xl font-black text-amber-50 tracking-tight uppercase">Paid Media Task Manager</h1>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <div className="flex gap-0.5 bg-stone-900 border border-stone-800 rounded-sm p-0.5">
-                <button onClick={() => setView('list')} className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs uppercase tracking-wider font-bold rounded-sm transition-colors ${view === 'list' ? 'bg-amber-400 text-stone-950' : 'text-stone-400 hover:text-stone-200'}`}>
-                  <LayoutGrid className="w-3.5 h-3.5" /> List
-                </button>
-                <button onClick={() => setView('calendar')} className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs uppercase tracking-wider font-bold rounded-sm transition-colors ${view === 'calendar' ? 'bg-amber-400 text-stone-950' : 'text-stone-400 hover:text-stone-200'}`}>
-                  <CalendarDays className="w-3.5 h-3.5" /> Calendar
-                </button>
-              </div>
-              {kind !== 'reporting' && (
-                <button onClick={() => onNew(kind)} className={`flex items-center gap-1.5 px-3 py-2 rounded-sm text-xs font-bold uppercase tracking-wider transition-colors ${kind === 'toolkit' ? 'bg-orange-500 text-stone-950 hover:bg-orange-400' : 'bg-amber-400 text-stone-950 hover:bg-amber-300'}`}>
-                  <Plus className="w-4 h-4" /> {newButtonLabel}
-                </button>
-              )}
-            </div>
+            {/* "+ New" only makes sense on the source-of-truth tabs.
+                Reporting has its own +Add inside the table. */}
+            {(view === 'campaigns' || view === 'toolkits') && (
+              <button onClick={() => onNew(kind)} className={`flex items-center gap-1.5 px-3 py-2 rounded-sm text-xs font-bold uppercase tracking-wider transition-colors ${view === 'toolkits' ? 'bg-orange-500 text-stone-950 hover:bg-orange-400' : 'bg-amber-400 text-stone-950 hover:bg-amber-300'}`}>
+                <Plus className="w-4 h-4" /> {newButtonLabel}
+              </button>
+            )}
           </div>
 
-          {/* Kind toggle (Campaigns / Toolkits / Reporting) */}
-          {view === 'list' && (
-            <div className="mb-3 flex items-center gap-1 bg-stone-900 border border-stone-800 rounded-sm p-1 w-fit">
-              <button
-                onClick={() => onKindChange('campaign')}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-sm text-xs font-bold uppercase tracking-wider transition-colors ${kind === 'campaign' ? 'bg-amber-400 text-stone-950' : 'text-stone-400 hover:text-stone-200'}`}
-              >
-                Campaigns
-                <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-sm ${kind === 'campaign' ? 'bg-stone-950/20 text-stone-950' : 'bg-stone-800 text-stone-400'}`}>{campaignCount}</span>
-              </button>
-              <button
-                onClick={() => onKindChange('toolkit')}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-sm text-xs font-bold uppercase tracking-wider transition-colors ${kind === 'toolkit' ? 'bg-orange-500 text-stone-950' : 'text-stone-400 hover:text-stone-200'}`}
-              >
-                Toolkits
-                <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-sm ${kind === 'toolkit' ? 'bg-stone-950/20 text-stone-950' : 'bg-stone-800 text-stone-400'}`}>{toolkitCount}</span>
-              </button>
-              <button
-                onClick={() => onKindChange('reporting')}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-sm text-xs font-bold uppercase tracking-wider transition-colors ${kind === 'reporting' ? 'bg-pink-500 text-stone-950' : 'text-stone-400 hover:text-stone-200'}`}
-              >
-                Reporting
-                <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-sm ${kind === 'reporting' ? 'bg-stone-950/20 text-stone-950' : 'bg-stone-800 text-stone-400'}`}>{(reportingItems || []).length}</span>
-              </button>
-            </div>
-          )}
+          {/* Single flat tab bar — replaces the old "view + kind" dual toggle.
+              Cross-cutting views (Tasks / Calendar) sit on the left; source-of-
+              truth tabs (Campaigns / Toolkits / Reporting) sit on the right,
+              separated by a divider. */}
+          <div className="mb-4 flex items-center gap-1 bg-stone-900 border border-stone-800 rounded-sm p-1 w-fit flex-wrap">
+            <button onClick={() => onViewChange('tasks')} className={`flex items-center gap-2 px-3 py-1.5 rounded-sm text-xs font-bold uppercase tracking-wider transition-colors ${view === 'tasks' ? 'bg-amber-400 text-stone-950' : 'text-stone-400 hover:text-stone-200'}`}>
+              <ListChecks className="w-3.5 h-3.5" /> Tasks
+            </button>
+            <button onClick={() => onViewChange('calendar')} className={`flex items-center gap-2 px-3 py-1.5 rounded-sm text-xs font-bold uppercase tracking-wider transition-colors ${view === 'calendar' ? 'bg-amber-400 text-stone-950' : 'text-stone-400 hover:text-stone-200'}`}>
+              <CalendarDays className="w-3.5 h-3.5" /> Calendar
+            </button>
+            <span className="w-px h-5 bg-stone-700 mx-1" aria-hidden="true"></span>
+            <button onClick={() => onViewChange('campaigns')} className={`flex items-center gap-2 px-3 py-1.5 rounded-sm text-xs font-bold uppercase tracking-wider transition-colors ${view === 'campaigns' ? 'bg-amber-400 text-stone-950' : 'text-stone-400 hover:text-stone-200'}`}>
+              Campaigns
+              <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-sm ${view === 'campaigns' ? 'bg-stone-950/20 text-stone-950' : 'bg-stone-800 text-stone-400'}`}>{campaignCount}</span>
+            </button>
+            <button onClick={() => onViewChange('toolkits')} className={`flex items-center gap-2 px-3 py-1.5 rounded-sm text-xs font-bold uppercase tracking-wider transition-colors ${view === 'toolkits' ? 'bg-orange-500 text-stone-950' : 'text-stone-400 hover:text-stone-200'}`}>
+              Toolkits
+              <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-sm ${view === 'toolkits' ? 'bg-stone-950/20 text-stone-950' : 'bg-stone-800 text-stone-400'}`}>{toolkitCount}</span>
+            </button>
+            <button onClick={() => onViewChange('reporting')} className={`flex items-center gap-2 px-3 py-1.5 rounded-sm text-xs font-bold uppercase tracking-wider transition-colors ${view === 'reporting' ? 'bg-pink-500 text-stone-950' : 'text-stone-400 hover:text-stone-200'}`}>
+              Reporting
+              <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-sm ${view === 'reporting' ? 'bg-stone-950/20 text-stone-950' : 'bg-stone-800 text-stone-400'}`}>{(reportingItems || []).length}</span>
+            </button>
+          </div>
 
           {/* Filter strip — campaigns/toolkits only; reporting has its own controls */}
-          {view === 'list' && kind !== 'reporting' && (
+          {(view === 'campaigns' || view === 'toolkits') && (
             <div className="flex items-center gap-2 flex-wrap mb-4 bg-stone-900 border border-stone-800 rounded-sm p-3">
               <div className="flex items-center gap-1.5">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-stone-500">Status:</span>
@@ -1119,9 +1122,11 @@
             <div className="flex items-center justify-center py-16 text-stone-400">
               <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading campaigns…
             </div>
+          ) : view === 'tasks' ? (
+            <TasksView campaigns={campaigns.filter((c) => c.status !== 'archived')} reportingItems={reportingItems} onOpen={onOpen} />
           ) : view === 'calendar' ? (
             <CalendarView campaigns={campaigns.filter((c) => c.status !== 'archived')} reportingItems={reportingItems} onOpen={onOpen} />
-          ) : kind === 'reporting' ? (
+          ) : view === 'reporting' ? (
             <ReportingView items={reportingItems} setItems={setReportingItems} />
           ) : campaigns.length === 0 ? (
             <div className="bg-stone-900 rounded-sm border-2 border-dashed border-stone-700 p-16 text-center">
@@ -1252,13 +1257,14 @@
               {(() => {
                 const h = computeToolkitHandoff(campaign);
                 const tone = HANDOFF_TONES[h.tone];
+                const Icon = h.complete ? CheckCircle2 : Clock;
                 return (
                   <div className={`flex items-center justify-between gap-2 px-2 py-1 rounded-sm border ${tone.bg} ${tone.border}`}>
                     <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-stone-500">
-                      <Clock className={`w-3 h-3 ${tone.text}`} /> To Paid Media
+                      <Icon className={`w-3 h-3 ${tone.text}`} /> {h.complete ? 'Passed' : 'To Paid Media'}
                     </span>
                     <span className={`text-[10px] font-bold ${tone.text}`}>
-                      {h.label}{h.handoff ? ` · ${fmtDateShort(h.handoff)}` : ''}
+                      {h.label}{h.handoff && !h.complete ? ` · ${fmtDateShort(h.handoff)}` : ''}
                     </span>
                   </div>
                 );
@@ -1299,6 +1305,294 @@
     // Filters live in React state (no localStorage) so they persist for
     // the session but reset between page loads.
     // ============================================================
+    // ============================================================
+    // TASKS / AGENDA VIEW
+    // Aggregates every event across campaigns, toolkits, and reporting
+    // into a single chronological list grouped by time bucket. The point
+    // is "what do I owe today / this week?" — not "what's the layout of
+    // my month?" (that's the Calendar). Click any row to jump to its
+    // source. Filters mirror the Calendar's role filter + add source-type
+    // and a hide-completed toggle.
+    // ============================================================
+    function TasksView({ campaigns, reportingItems, onOpen }) {
+      const [activeRoles, setActiveRoles] = useState(() => {
+        const s = {}; ROLE_KEYS.forEach((k) => { s[k] = true; }); return s;
+      });
+      const [activeSources, setActiveSources] = useState({ campaign: true, toolkit: true, reporting: true });
+      const [hideCompleted, setHideCompleted] = useState(true);
+      const [search, setSearch] = useState('');
+
+      const campaignById = useMemo(() => {
+        const m = new Map();
+        campaigns.forEach((c) => m.set(c.id, c));
+        return m;
+      }, [campaigns]);
+
+      // Pull events from the same builders the Calendar uses, then add a
+      // synthetic "Pass to Paid Media" event per toolkit so the agenda has
+      // a clear deliverable line.
+      const allEvents = useMemo(() => {
+        const events = [
+          ...buildCalendarEvents(campaigns),
+          ...buildReportingEvents(reportingItems),
+        ];
+        // Add toolkit handoff deadlines as their own row so they show up
+        // in the agenda even though the calendar treats them as a launch
+        // marker / countdown card only.
+        campaigns.forEach((c) => {
+          if (!c || c.status === 'archived') return;
+          const isToolkit = c.data && c.data.kind === 'toolkit';
+          if (!isToolkit) return;
+          const h = computeToolkitHandoff(c);
+          if (!h || !h.handoff) return;
+          events.push({
+            campaignId: c.id,
+            campaignName: c.name || 'Untitled toolkit',
+            client: c.client || '',
+            taskId: `__toolkit_handoff__${c.id}`,
+            taskName: 'Toolkit → Pass to Paid Media',
+            date: h.handoff,
+            role: 'Paid Media',
+            completed: !!h.complete,
+            isLaunchDate: false,
+            isToolkitHandoff: true,
+            isToolkit: true,
+          });
+        });
+        return events;
+      }, [campaigns, reportingItems]);
+
+      const sourceOf = (ev) => {
+        if (ev.isReporting) return 'reporting';
+        if (ev.isToolkit) return 'toolkit';
+        return 'campaign';
+      };
+
+      const filtered = useMemo(() => {
+        const q = search.trim().toLowerCase();
+        return allEvents.filter((ev) => {
+          if (!activeRoles[ev.role]) return false;
+          if (!activeSources[sourceOf(ev)]) return false;
+          if (hideCompleted && ev.completed) return false;
+          // Launch markers aren't really tasks — hide from agenda.
+          if (ev.isLaunchDate) return false;
+          if (q) {
+            const hay = `${ev.taskName} ${ev.campaignName} ${ev.client}`.toLowerCase();
+            if (!hay.includes(q)) return false;
+          }
+          return true;
+        });
+      }, [allEvents, activeRoles, activeSources, hideCompleted, search]);
+
+      // Bucket by time. Buckets:
+      //   overdue (date < today, not complete)
+      //   today
+      //   tomorrow
+      //   this-week (later this work-week, after tomorrow)
+      //   next-week
+      //   later (everything beyond next week)
+      const buckets = useMemo(() => {
+        const today = startOfDay(new Date());
+        // Compute Sunday-anchored "end of this week" and "end of next week"
+        const dow = today.getDay(); // 0..6 (0 = Sun)
+        const endThisWeek = startOfDay(addCalendarDays(today, 6 - dow)); // upcoming Sat
+        const endNextWeek = startOfDay(addCalendarDays(endThisWeek, 7));
+        const tomorrow = startOfDay(addCalendarDays(today, 1));
+        const b = { overdue: [], today: [], tomorrow: [], thisWeek: [], nextWeek: [], later: [] };
+        filtered.forEach((ev) => {
+          const d = startOfDay(ev.date);
+          if (d < today) b.overdue.push(ev);
+          else if (+d === +today) b.today.push(ev);
+          else if (+d === +tomorrow) b.tomorrow.push(ev);
+          else if (d <= endThisWeek) b.thisWeek.push(ev);
+          else if (d <= endNextWeek) b.nextWeek.push(ev);
+          else b.later.push(ev);
+        });
+        // Sort each bucket chronologically (overdue: most-overdue first via desc → asc later? keep asc so oldest-overdue is at top)
+        Object.keys(b).forEach((k) => {
+          b[k].sort((a, b2) => a.date - b2.date);
+        });
+        return b;
+      }, [filtered]);
+
+      const totalShown = filtered.length;
+
+      const SOURCE_META = {
+        campaign:  { label: 'Campaign',  color: 'bg-amber-500/15 text-amber-300 border-amber-500/40' },
+        toolkit:   { label: 'Toolkit',   color: 'bg-orange-500/15 text-orange-300 border-orange-500/40' },
+        reporting: { label: 'Reporting', color: 'bg-pink-500/15 text-pink-300 border-pink-500/40' },
+      };
+
+      const BUCKETS_ORDER = [
+        { key: 'overdue',  label: 'Overdue',   tone: 'text-red-300',     dot: 'bg-red-400' },
+        { key: 'today',    label: 'Today',     tone: 'text-orange-300',  dot: 'bg-orange-400' },
+        { key: 'tomorrow', label: 'Tomorrow',  tone: 'text-amber-300',   dot: 'bg-amber-400' },
+        { key: 'thisWeek', label: 'This week', tone: 'text-emerald-300', dot: 'bg-emerald-400' },
+        { key: 'nextWeek', label: 'Next week', tone: 'text-teal-300',    dot: 'bg-teal-400' },
+        { key: 'later',    label: 'Later',     tone: 'text-stone-400',   dot: 'bg-stone-500' },
+      ];
+
+      const fmtDateChip = (d) => d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+
+      const handleClick = (ev) => {
+        // Reporting events have synthetic ids — we can't open them via the
+        // campaign drawer. Best UX is to do nothing for now (they live in
+        // the Reporting tab). Toolkit handoffs and campaign tasks both
+        // open their parent campaign.
+        if (ev.isReporting) return;
+        const c = campaignById.get(ev.campaignId);
+        if (c && onOpen) onOpen(c);
+      };
+
+      return (
+        <div className="max-w-5xl mx-auto space-y-4">
+          {/* Header */}
+          <div className="bg-stone-900 border border-stone-800 rounded-sm p-4">
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div>
+                <div className="text-[10px] uppercase tracking-[0.3em] font-bold text-amber-400 mb-1">Daily Tasks</div>
+                <h2 className="text-xl font-black text-amber-50">{totalShown} task{totalShown === 1 ? '' : 's'} across campaigns, toolkits, and reporting</h2>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5 bg-stone-950 border border-stone-800 rounded-sm px-2 py-1">
+                  <Search className="w-3.5 h-3.5 text-stone-500" />
+                  <input
+                    type="text"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Filter tasks…"
+                    className="bg-transparent text-xs text-stone-100 placeholder:text-stone-500 focus:outline-none w-44"
+                  />
+                </div>
+                <label className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-stone-300 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={hideCompleted}
+                    onChange={(e) => setHideCompleted(e.target.checked)}
+                    className="w-3.5 h-3.5 accent-emerald-500"
+                  />
+                  Hide completed
+                </label>
+              </div>
+            </div>
+            {/* Filter chips */}
+            <div className="mt-3 flex items-center gap-3 flex-wrap border-t border-stone-800 pt-3">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] uppercase tracking-widest font-bold text-stone-500">Source:</span>
+                {Object.entries(SOURCE_META).map(([k, m]) => (
+                  <button
+                    key={k}
+                    onClick={() => setActiveSources((s) => ({ ...s, [k]: !s[k] }))}
+                    className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-sm border transition-colors ${activeSources[k] ? m.color : 'bg-stone-900 text-stone-600 border-stone-800'}`}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] uppercase tracking-widest font-bold text-stone-500">Role:</span>
+                {ROLE_KEYS.map((rk) => {
+                  const r = ROLES[rk];
+                  const on = activeRoles[rk];
+                  return (
+                    <button
+                      key={rk}
+                      onClick={() => setActiveRoles((s) => ({ ...s, [rk]: !s[rk] }))}
+                      style={on ? { backgroundColor: r.bg, color: r.color, borderColor: r.color } : {}}
+                      className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-sm border transition-colors ${on ? '' : 'bg-stone-900 text-stone-600 border-stone-800'}`}
+                    >
+                      {r.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* Buckets */}
+          {totalShown === 0 ? (
+            <div className="bg-stone-900 border-2 border-dashed border-stone-700 rounded-sm p-12 text-center">
+              <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto mb-3" />
+              <h3 className="text-amber-50 font-black uppercase tracking-wider mb-1">All clear</h3>
+              <p className="text-sm text-stone-400">No tasks match these filters. {hideCompleted && 'Try un-checking "Hide completed".'}</p>
+            </div>
+          ) : (
+            BUCKETS_ORDER.map(({ key, label, tone, dot }) => {
+              const items = buckets[key];
+              if (!items || items.length === 0) return null;
+              return (
+                <div key={key} className="bg-stone-900 border border-stone-800 rounded-sm overflow-hidden">
+                  <div className="px-4 py-2 bg-stone-800/60 border-b border-stone-800 flex items-center justify-between">
+                    <h3 className={`text-sm font-black uppercase tracking-[0.2em] flex items-center gap-2 ${tone}`}>
+                      <span className={`w-2 h-2 rounded-full ${dot}`}></span>
+                      {label}
+                    </h3>
+                    <span className="text-[10px] font-bold text-stone-400 uppercase tracking-widest">
+                      {items.length} task{items.length === 1 ? '' : 's'}
+                    </span>
+                  </div>
+                  <ul>
+                    {items.map((ev) => {
+                      const r = ROLES[ev.role] || ROLES['Paid Media'];
+                      const src = sourceOf(ev);
+                      const sm = SOURCE_META[src];
+                      const isClickable = !ev.isReporting;
+                      return (
+                        <li
+                          key={`${ev.campaignId}-${ev.taskId}`}
+                          onClick={() => handleClick(ev)}
+                          className={`group flex items-start gap-3 px-4 py-2.5 border-b border-stone-800 last:border-b-0 ${ev.completed ? 'opacity-50' : ''} ${isClickable ? 'cursor-pointer hover:bg-stone-800/50' : ''}`}
+                          title={isClickable ? 'Click to open source' : 'Open the Reporting tab to manage this row'}
+                        >
+                          {/* Date chip */}
+                          <div className="flex-shrink-0 w-20">
+                            <div className="text-[10px] uppercase tracking-widest text-stone-500 font-bold">
+                              {ev.date.toLocaleDateString('en-US', { weekday: 'short' })}
+                            </div>
+                            <div className={`text-sm font-bold ${key === 'overdue' ? 'text-red-300' : 'text-amber-50'}`}>
+                              {ev.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                            </div>
+                          </div>
+                          {/* Body */}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              {ev.completed && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />}
+                              <span className={`text-sm font-medium ${ev.completed ? 'line-through text-stone-500' : 'text-stone-100'}`}>
+                                {ev.taskName}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2 mt-0.5 flex-wrap text-[11px]">
+                              <span className={`text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded-sm border ${sm.color}`}>
+                                {sm.label}
+                              </span>
+                              <span className="text-stone-400 truncate">{ev.campaignName}</span>
+                              {ev.client && (
+                                <>
+                                  <span className="text-stone-700">·</span>
+                                  <span className="text-stone-500 truncate">{ev.client}</span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                          {/* Role chip */}
+                          <span
+                            className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-sm flex-shrink-0 self-center"
+                            style={{ backgroundColor: r.bg, color: r.color }}
+                          >
+                            {r.label}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              );
+            })
+          )}
+        </div>
+      );
+    }
+
     function CalendarView({ campaigns, reportingItems, onOpen }) {
       const [cursor, setCursor] = useState(() => {
         const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); return d;
@@ -4567,7 +4861,7 @@
     }
 
     // ---- CreativeToolkit (main tab component) ----
-    function CreativeToolkit({ campaign, toolkit, onToolkitChange, userEmail }) {
+    function CreativeToolkit({ campaign, toolkit, onToolkitChange, onLaunchDateChange, userEmail }) {
       const placements = Array.isArray(toolkit && toolkit.placements) ? toolkit.placements : [];
 
       const defaultMediaBuyer = userEmail || 'Sydnie/Pathlabs';
@@ -4622,11 +4916,17 @@
       };
 
       // Handoff countdown — recomputed every minute so the card stays fresh.
-      const handoff = useMemo(() => computeToolkitHandoff(campaign), [campaign.launch_date, toolkit && toolkit.handoffDaysBeforeLaunch]);
+      const handoff = useMemo(
+        () => computeToolkitHandoff(campaign),
+        [campaign.launch_date, toolkit && toolkit.handoffDaysBeforeLaunch, toolkit && toolkit.complete]
+      );
       const handoffTone = HANDOFF_TONES[handoff.tone];
       const setHandoffLead = (n) => {
         const clamped = Math.max(0, Math.min(60, Math.round(Number(n) || 0)));
         onToolkitChange({ ...(toolkit || {}), handoffDaysBeforeLaunch: clamped });
+      };
+      const setToolkitComplete = (val) => {
+        onToolkitChange({ ...(toolkit || {}), complete: !!val });
       };
 
       return (
@@ -4639,14 +4939,20 @@
                 <h2 className="text-2xl font-black text-amber-50 tracking-tight">{campaign.name || 'Untitled Campaign'}</h2>
                 <div className="mt-1 flex items-center gap-3 flex-wrap text-xs">
                   {campaign.client && <span className="text-stone-400">{campaign.client}</span>}
-                  {launchDate && (
-                    <>
-                      <span className="text-stone-700">·</span>
-                      <span className="text-stone-400 flex items-center gap-1">
-                        <Calendar className="w-3 h-3" /> Launch {fmtDateShort(launchDate)}
-                      </span>
-                    </>
-                  )}
+                  {campaign.client && <span className="text-stone-700">·</span>}
+                  <label className="text-stone-400 flex items-center gap-1.5">
+                    <Calendar className="w-3 h-3" />
+                    <span className="uppercase tracking-widest text-[10px] font-bold text-stone-500">Launch</span>
+                    <input
+                      type="date"
+                      value={campaign.launch_date || ''}
+                      onChange={(e) => onLaunchDateChange && onLaunchDateChange(e.target.value)}
+                      className="bg-stone-950 border border-stone-700 text-amber-50 text-xs font-bold rounded-sm px-2 py-1 focus:outline-none focus:border-orange-500"
+                    />
+                    {campaign.launch_date && (
+                      <span className="text-stone-500 text-[11px]">({fmtDateShort(parseDateSafe(campaign.launch_date))})</span>
+                    )}
+                  </label>
                 </div>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
@@ -4673,8 +4979,14 @@
             <div className="flex items-start justify-between gap-4 flex-wrap">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 mb-1">
-                  <Clock className={`w-4 h-4 ${handoffTone.text}`} />
-                  <span className="text-[10px] font-black uppercase tracking-[0.25em] text-stone-400">Pass to Paid Media By</span>
+                  {handoff.complete ? (
+                    <CheckCircle2 className={`w-4 h-4 ${handoffTone.text}`} />
+                  ) : (
+                    <Clock className={`w-4 h-4 ${handoffTone.text}`} />
+                  )}
+                  <span className="text-[10px] font-black uppercase tracking-[0.25em] text-stone-400">
+                    {handoff.complete ? 'Toolkit Complete' : 'Pass to Paid Media By'}
+                  </span>
                 </div>
                 <div className={`text-xl font-black tracking-tight ${handoffTone.text}`}>
                   {handoff.label}
@@ -4682,7 +4994,10 @@
                 <div className="mt-1 text-xs text-stone-400 flex items-center gap-2 flex-wrap">
                   {handoff.handoff ? (
                     <>
-                      <span>Pass to Paid Media Team by <span className="text-stone-200 font-bold">{fmtDateShort(handoff.handoff)}</span></span>
+                      <span>
+                        {handoff.complete ? 'Originally due to Paid Media' : 'Pass to Paid Media Team by'}{' '}
+                        <span className="text-stone-200 font-bold">{fmtDateShort(handoff.handoff)}</span>
+                      </span>
                       {handoff.launch && (
                         <>
                           <span className="text-stone-700">·</span>
@@ -4695,20 +5010,34 @@
                   )}
                 </div>
                 <div className="mt-2 text-[10px] text-stone-500 italic">
-                  Buffer accounts for Paid Media → Pathlabs handoff. Same-day passthrough isn't always possible.
+                  {handoff.complete
+                    ? 'Marked complete — countdown is paused and the toolkit will no longer flag as overdue.'
+                    : 'Buffer accounts for Paid Media → Pathlabs handoff. Same-day passthrough isn\'t always possible.'}
                 </div>
               </div>
-              <div className="flex items-center gap-2 flex-shrink-0">
-                <label className="text-[10px] font-bold uppercase tracking-widest text-stone-400">Pass to Paid Media</label>
-                <input
-                  type="number"
-                  min="0"
-                  max="60"
-                  value={handoff.lead}
-                  onChange={(e) => setHandoffLead(e.target.value)}
-                  className="w-14 bg-stone-950 border border-stone-700 text-amber-50 text-xs font-bold rounded-sm px-2 py-1 text-center focus:outline-none focus:border-orange-500"
-                />
-                <span className="text-[10px] font-bold uppercase tracking-widest text-stone-400">biz days before launch</span>
+              <div className="flex flex-col items-end gap-2 flex-shrink-0">
+                <label className="flex items-center gap-1.5 cursor-pointer text-[10px] font-bold uppercase tracking-widest text-stone-300 select-none">
+                  <input
+                    type="checkbox"
+                    checked={!!handoff.complete}
+                    onChange={(e) => setToolkitComplete(e.target.checked)}
+                    className="w-4 h-4 accent-emerald-500 cursor-pointer"
+                  />
+                  Mark passed to Paid Media
+                </label>
+                <div className="flex items-center gap-2">
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-stone-400">Pass to Paid Media</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="60"
+                    value={handoff.lead}
+                    onChange={(e) => setHandoffLead(e.target.value)}
+                    disabled={handoff.complete}
+                    className="w-14 bg-stone-950 border border-stone-700 text-amber-50 text-xs font-bold rounded-sm px-2 py-1 text-center focus:outline-none focus:border-orange-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                  />
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-stone-400">biz days before launch</span>
+                </div>
               </div>
             </div>
           </div>
@@ -4877,6 +5206,25 @@
         timerRef.current = setTimeout(flush, 800);
       }, [flush, onLocalUpdate, campaign]);
 
+      // Toolkit launch-date editor — updates just the campaign launch_date
+      // while preserving the rest of the toolkit data. Empty string clears it.
+      const handleToolkitLaunchChange = useCallback((nextLaunchDate) => {
+        const prevData = latestRef.current.data || {};
+        const merged = {
+          name: latestRef.current.name,
+          client: latestRef.current.client,
+          launch_date: nextLaunchDate || null,
+          data: { ...prevData },
+        };
+        latestRef.current = merged;
+        pendingRef.current = merged;
+        if (onLocalUpdate) {
+          onLocalUpdate({ ...campaign, ...merged });
+        }
+        if (timerRef.current) clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(flush, 800);
+      }, [flush, onLocalUpdate, campaign]);
+
       const handleRetry = useCallback(() => { flush(); }, [flush]);
 
       // Flush pending changes on unmount
@@ -4963,6 +5311,7 @@
                 campaign={campaign}
                 toolkit={toolkit}
                 onToolkitChange={handleToolkitChange}
+                onLaunchDateChange={handleToolkitLaunchChange}
                 userEmail={userEmail}
               />
             </div>
@@ -4995,12 +5344,95 @@
       // Lifted here so the back-button from a detail view can return the
       // user to the same tab they came from. Pure React state — no
       // localStorage / sessionStorage per spec.
-      const [dashboardKind, setDashboardKind] = useState('campaign');
-      // Reporting items live here so both the Reporting tab and the main
-      // Calendar view share a single source of truth. Persisted to
-      // localStorage on every change.
-      const [reportingItems, setReportingItems] = useState(() => loadReportingItems());
-      useEffect(() => { saveReportingItems(reportingItems); }, [reportingItems]);
+      // Single flat tab selection. Lifted here so opening a campaign and
+      // hitting Back returns the user to the tab they were on (Tasks /
+      // Calendar / Campaigns / Toolkits / Reporting).
+      const [dashboardView, setDashboardView] = useState('tasks');
+
+      // Reporting items now live in Supabase (table: reporting_state) so they
+      // sync across browsers / origins and survive a cache wipe. localStorage
+      // stays as an offline cache + migration source.
+      const [reportingItems, setReportingItems] = useState([]);
+      const [reportingLoaded, setReportingLoaded] = useState(false);
+      const reportingSaveTimer = useRef(null);
+      const reportingFirstLoad = useRef(true);
+
+      // Load reporting items from Supabase on mount. If the user's cloud row
+      // is empty but their browser has localStorage items, offer a one-time
+      // migration so they don't lose previously-imported data.
+      useEffect(() => {
+        let cancelled = false;
+        (async () => {
+          try {
+            const { data, error } = await sb
+              .from('reporting_state')
+              .select('items')
+              .eq('user_id', session.user.id)
+              .maybeSingle();
+            if (cancelled) return;
+            if (error && error.code !== 'PGRST116') throw error;  // PGRST116 = no rows
+            const cloud = (data && Array.isArray(data.items)) ? data.items : [];
+            const local = loadReportingItems();
+            if (cloud.length === 0 && local.length > 0) {
+              const ok = window.confirm(
+                `Found ${local.length} reporting item${local.length === 1 ? '' : 's'} saved in this browser only.\n\n` +
+                `Move them to your account so they sync across devices and survive cache clears?`
+              );
+              if (ok) {
+                const { error: upErr } = await sb.from('reporting_state').upsert({
+                  user_id: session.user.id,
+                  items: local,
+                  updated_at: new Date().toISOString(),
+                });
+                if (upErr) throw upErr;
+                if (!cancelled) setReportingItems(local);
+              } else if (!cancelled) {
+                setReportingItems(cloud);
+              }
+            } else if (!cancelled) {
+              setReportingItems(cloud);
+            }
+          } catch (err) {
+            const msg = (err && (err.message || err.hint || err.code)) || String(err);
+            console.warn('[reporting] Cloud load failed → using localStorage. ' +
+              '(If you have not yet created the reporting_state table in Supabase, run the SQL provided ' +
+              'in the dashboard release notes.) Details:', msg);
+            if (!cancelled) setReportingItems(loadReportingItems());
+          } finally {
+            if (!cancelled) {
+              reportingFirstLoad.current = false;
+              setReportingLoaded(true);
+            }
+          }
+        })();
+        return () => { cancelled = true; };
+      }, [session.user.id]);
+
+      // Debounced auto-save: every change to reportingItems writes the whole
+      // array up to Supabase (upsert) and also mirrors to localStorage for
+      // offline backup. We skip the very first save right after load so we
+      // don't wipe cloud data with an empty initial state.
+      useEffect(() => {
+        if (!reportingLoaded) return;
+        if (reportingSaveTimer.current) clearTimeout(reportingSaveTimer.current);
+        reportingSaveTimer.current = setTimeout(async () => {
+          try {
+            const { error } = await sb.from('reporting_state').upsert({
+              user_id: session.user.id,
+              items: reportingItems,
+              updated_at: new Date().toISOString(),
+            });
+            if (error) throw error;
+            saveReportingItems(reportingItems);  // mirror to localStorage
+          } catch (err) {
+            const msg = (err && (err.message || err.hint || err.code)) || String(err);
+            console.warn('[reporting] Cloud save failed → kept localStorage copy. Details:', msg);
+            // Don't bother the user with a popup — keep the local copy at least
+            saveReportingItems(reportingItems);
+          }
+        }, 600);
+        return () => { if (reportingSaveTimer.current) clearTimeout(reportingSaveTimer.current); };
+      }, [reportingItems, reportingLoaded, session.user.id]);
 
       const loadCampaigns = useCallback(async () => {
         setLoading(true);
@@ -5041,8 +5473,8 @@
         setCampaigns((prev) => [row, ...prev]);
         // After creating a toolkit, flip the dashboard tab so back-navigation
         // returns the user to where they expect (the Toolkits tab).
-        if (data && data.kind === 'toolkit') setDashboardKind('toolkit');
-        else setDashboardKind('campaign');
+        if (data && data.kind === 'toolkit') setDashboardView('toolkits');
+        else setDashboardView('campaigns');
         setShowNew(null);
         setActiveId(row.id);
       };
@@ -5133,15 +5565,9 @@
               setReportingItems={setReportingItems}
               loading={loading}
               error={error}
-              kind={dashboardKind}
-              onKindChange={setDashboardKind}
-              onOpen={(c) => {
-                // Remember which kind tab the user came from so the
-                // detail view's "Back to Dashboard" returns there.
-                if (c && c.data && c.data.kind === 'toolkit') setDashboardKind('toolkit');
-                else setDashboardKind('campaign');
-                setActiveId(c.id);
-              }}
+              view={dashboardView}
+              onViewChange={setDashboardView}
+              onOpen={(c) => setActiveId(c.id)}
               onNew={(k) => setShowNew(k === 'toolkit' ? 'toolkit' : 'campaign')}
               onArchive={handleArchive}
               onUnarchive={handleUnarchive}
